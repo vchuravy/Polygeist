@@ -81,6 +81,10 @@ bool isOpLoopInvariant(Operation &op, Value indVar,
     }
   } else if (auto ifOp = dyn_cast<scf::IfOp>(op)) {
     definedOps.insert(&op);
+    if (!ifOp.condition().getDefiningOp()) return false;
+    if (definedOps.count(ifOp.condition().getDefiningOp()) && opsToHoist.count(ifOp.condition().getDefiningOp()) == 0) {
+      return false;
+    }
     if (!areAllOpsInTheBlockListInvariant(ifOp.thenRegion(), indVar, definedOps,
                                           opsToHoist)) {
       return false;
