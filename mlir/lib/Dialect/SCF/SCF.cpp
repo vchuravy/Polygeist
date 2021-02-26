@@ -1712,6 +1712,62 @@ struct ReplaceIfYieldWithConditionOrValue : public OpRewritePattern<IfOp> {
   }
 };
 
+struct CombineIfs : public OpRewritePattern<IfOp> {
+  using OpRewritePattern<IfOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(IfOp op,
+                                PatternRewriter &rewriter) const override {
+    if (op.elseRegion().getBlocks().size() >= 2)
+      return failure();
+    assert(op.thenRegion().getBlocks().size());
+    assert(op.elseRegion().getBlocks().size() <= 1);
+    Block *parent = op->getBlock();
+    if (op == &parent->back())
+      return failure();
+    auto nextIf = dyn_cast<IfOp>(op->getNextNode());
+    if (!nextIf)
+      return failure();
+    if (op.results().size() != 0)
+      return failure();
+    if (nextIf.condition() != op.condition())
+      return failure();
+
+    rewriter.updateRootInPlace(nextIf, [&]() {
+      Block &then = *op.thenRegion().begin();
+      rewriter.eraseOp(&then.back());
+      rewriter.mergeBlocks(&*nextIf.thenRegion().begin(), &then);
+      nextIf.thenRegion().getBlocks().splice(
+          nextIf.thenRegion().getBlocks().begin(), op.thenRegion().getBlocks());
+      // rewriter.mergeBlockBefore(&then,
+      // &*nextIf.thenRegion().begin()->begin());
+
+      assert(nextIf.thenRegion().getBlocks().size());
+
+      if (!op.elseRegion().empty()) {
+        Block &elser = *op.elseRegion().begin();
+        if (nextIf.elseRegion().empty()) {
+          auto &eb = *(new Block());
+          nextIf.elseRegion().getBlocks().push_back(&eb);
+          // nextIf.elseRegion().begin()->getOperations().splice(nextIf.elseRegion().begin()->begin(),
+          // elser.getOperations());
+          rewriter.mergeBlocks(&elser, &eb);
+        } else {
+          rewriter.eraseOp(&elser.back());
+          // rewriter.mergeBlockBefore(&elser,
+          // &*nextIf.elseRegion().begin()->begin());
+          rewriter.mergeBlocks(&*nextIf.elseRegion().begin(), &elser);
+          nextIf.elseRegion().getBlocks().splice(
+              nextIf.elseRegion().getBlocks().begin(),
+              op.elseRegion().getBlocks());
+        }
+        assert(nextIf.elseRegion().getBlocks().size());
+      }
+    });
+    rewriter.eraseOp(op);
+    return success();
+  }
+};
+
 struct RemoveBoolean : public OpRewritePattern<IfOp> {
   using OpRewritePattern<IfOp>::OpRewritePattern;
 
@@ -2174,9 +2230,9 @@ void WhileOp::getCanonicalizationPatterns(OwningRewritePatternList &results,
 
 void IfOp::getCanonicalizationPatterns(RewritePatternSet &results,
                                        MLIRContext *context) {
-  results
-      .add<RemoveUnusedResults, RemoveStaticCondition, ConvertTrivialIfToSelect, RemoveBoolean,
-           ConditionPropagation, ReplaceIfYieldWithConditionOrValue>(context);
+   results.insert<CombineIfs, ConditionPropagation, RemoveNotIf,
+                 RemoveUnusedResults, RemoveStaticCondition, RemoveBoolean,
+                 ConvertTrivialIfToSelect>(context);
 }
 
 //===----------------------------------------------------------------------===//
