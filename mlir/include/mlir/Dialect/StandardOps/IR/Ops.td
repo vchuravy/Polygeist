@@ -1714,6 +1714,7 @@ def SignExtendIOp : Std_Op<"sexti", [NoSideEffect,
     return printStandardCastOp(this->getOperation(), p);
   }];
   let hasFolder = 1;
+  let hasCanonicalizer = 1;
 }
 
 //===----------------------------------------------------------------------===//
