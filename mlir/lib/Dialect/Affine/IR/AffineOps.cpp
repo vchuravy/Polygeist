@@ -1997,7 +1997,7 @@ struct AffineForEmptyLoopFolder : public OpRewritePattern<AffineForOp> {
 
 void AffineForOp::getCanonicalizationPatterns(RewritePatternSet &results,
                                               MLIRContext *context) {
-  results.add<AffineForEmptyLoopFolder>(context);
+  results.insert<AffineForEmptyLoopFolder>(context);
 }
 
 LogicalResult AffineForOp::fold(ArrayRef<Attribute> operands,
