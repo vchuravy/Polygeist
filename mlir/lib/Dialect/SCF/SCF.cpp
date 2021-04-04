@@ -2020,8 +2020,10 @@ struct WhileConditionTruth : public OpRewritePattern<WhileOp> {
 
 void WhileOp::getCanonicalizationPatterns(OwningRewritePatternList &results,
                                           MLIRContext *context) {
+  //results.insert<MoveWhileDown, RemoveUnusedCondVar, MoveSideEffectFreeWhile,
+  //               WhileConditionTruth, MoveWhileToFor>(context);
   results.insert<MoveWhileDown, RemoveUnusedCondVar, MoveSideEffectFreeWhile,
-                 WhileConditionTruth, MoveWhileToFor>(context);
+                 WhileConditionTruth>(context);
 }
 
 void IfOp::getCanonicalizationPatterns(RewritePatternSet &results,
