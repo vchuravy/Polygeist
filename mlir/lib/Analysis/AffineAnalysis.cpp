@@ -1060,7 +1060,7 @@ DependenceResult mlir::checkMemrefAccessDependence(
                        dependenceConstraints);
 
   // Return 'NoDependence' if the solution space is empty: no dependence.
-  if (dependenceConstraints->isEmpty()) {
+  if (dependenceConstraints->isIntegerEmpty()) {
     return DependenceResult::NoDependence;
   }
 
