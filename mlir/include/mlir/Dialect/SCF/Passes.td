@@ -23,6 +23,12 @@ def SCFForLoopSpecialization
   let constructor = "mlir::createForLoopSpecializationPass()";
 }
 
+def SCFCPUify : FunctionPass<"cpuify"> {
+  let summary = "remove scf.barrier";
+  let constructor = "mlir::createCPUifyPass()";
+  let dependentDialects = ["memref::MemRefDialect", "StandardOpsDialect"];
+}
+
 def SCFParallelLoopFusion : Pass<"parallel-loop-fusion"> {
   let summary = "Fuse adjacent parallel loops";
   let constructor = "mlir::createParallelLoopFusionPass()";

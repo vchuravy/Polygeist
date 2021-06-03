@@ -22,6 +22,8 @@ namespace memref {
 class MemRefDialect;
 } // end namespace memref
 
+class StandardOpsDialect;
+
 #define GEN_PASS_CLASSES
 #include "mlir/Dialect/SCF/Passes.h.inc"
 

@@ -24,6 +24,8 @@ std::unique_ptr<Pass> createSCFBufferizePass();
 /// vectorization.
 std::unique_ptr<Pass> createForLoopSpecializationPass();
 
+std::unique_ptr<Pass> createCPUifyPass();
+
 /// Creates a loop fusion pass which fuses parallel loops.
 std::unique_ptr<Pass> createParallelLoopFusionPass();
 
