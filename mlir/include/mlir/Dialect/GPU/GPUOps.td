@@ -910,6 +910,7 @@ def GPU_MemcpyOp : GPU_Op<"memcpy", [GPU_AsyncOpInterface]> {
     $dst`,` $src `:` type($dst)`,` type($src) attr-dict
   }];
   let verifier = [{ return ::verify(*this); }];
+  let hasFolder = 1;
 }
 
 #endif // GPU_OPS
