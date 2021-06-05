@@ -73,49 +73,48 @@ std::unique_ptr<OperationPass<FuncOp>> mlir::createParallelLowerPass() {
   return std::make_unique<ParallelLower>();
 }
 
+#include "mlir/Transforms/InliningUtils.h"
+
 void ParallelLower::runOnFunction() {
   // Only supports single block functions at the moment.
-  FuncOp f = getFunction();
+  getFunction().walk([&](gpu::LaunchOp launchOp) {
 
-  Block* entryBlock = &*f.getBlocks().begin();
-  auto nb = entryBlock->splitBlock(entryBlock->begin());
-  mlir::OpBuilder builder(f.getContext());
+  #if 0
+  launchOp.walk([&](CallOp caller) {
+
+    // Build the inliner interface.
+    InlinerInterface interface(&getContext());
+
+    Region *targetRegion = caller.getCallableForCallee().resolveCallable(&symbolTable).getCallableRegion();
+    inlineCall(
+         interface, caller, cast<CallableOpInterface>(targetRegion->getParentOp()),
+         targetRegion, /*shouldCloneInlinedRegion=*/false);
+
+    // If the inlining was successful then erase the call and callee if
+    // possible.
+    caller.erase();
+  });
+  #endif
+
+  Block* nb = &launchOp.getRegion().front();
+  mlir::OpBuilder builder(launchOp.getContext());
   auto loc = builder.getUnknownLoc();
-  
-  builder.setInsertionPointToStart(entryBlock);
+
+  builder.setInsertionPoint(launchOp->getBlock(), launchOp->getIterator());
   auto zindex = builder.create<mlir::ConstantIndexOp>(loc, 0);
 
   auto oneindex = builder.create<mlir::ConstantIndexOp>(loc, 1);
-  auto gridx = builder.create<mlir::gpu::GridDimOp>(loc, zindex.getType(), "x");
-  auto blockx = builder.create<mlir::gpu::BlockDimOp>(loc, zindex.getType(), "x");
-  auto gridy = builder.create<mlir::gpu::GridDimOp>(loc, zindex.getType(), "y");
-  auto blocky = builder.create<mlir::gpu::BlockDimOp>(loc, zindex.getType(), "y");
-  auto gridz = builder.create<mlir::gpu::GridDimOp>(loc, zindex.getType(), "z");
-  auto blockz = builder.create<mlir::gpu::BlockDimOp>(loc, zindex.getType(), "z");
-  //auto threadx = builder.create<mlir::gpu::ThreadDimOp>(loc, zindex.getType(), "x");
 
-    /*
-  auto grid = builder.create<mlir::scf::ParallelOp>(loc, ValueRange({zindex}), ValueRange({gridx}), ValueRange({oneindex}));
-  Block* gridB;
-  {
-    auto iter = grid.getRegion().getBlocks().begin();
-    gridB = &*iter;
-    gridB->begin()->erase();
-  }
-  builder.setInsertionPointToStart(gridB);
-  */
-
-  auto block = builder.create<mlir::scf::ParallelOp>(loc, ValueRange({zindex, zindex, zindex}), ValueRange({gridx, gridy, gridz}), ValueRange({oneindex, oneindex, oneindex}));
+  auto block = builder.create<mlir::scf::ParallelOp>(loc, ValueRange({zindex, zindex, zindex}), ValueRange({launchOp.gridSizeX(), launchOp.gridSizeY(), launchOp.gridSizeZ()}), ValueRange({oneindex, oneindex, oneindex}));
   Block* blockB;
   {
     auto iter = block.getRegion().getBlocks().begin();
     blockB = &*iter;
     blockB->begin()->erase();
   }
-  builder.create<mlir::ReturnOp>(loc);
   builder.setInsertionPointToStart(blockB);
 
-  auto threadr = builder.create<mlir::scf::ParallelOp>(loc, ValueRange({zindex, zindex, zindex}), ValueRange({blockx, blocky, blockz}), ValueRange({oneindex, oneindex, oneindex}));
+  auto threadr = builder.create<mlir::scf::ParallelOp>(loc, ValueRange({zindex, zindex, zindex}), ValueRange({launchOp.blockSizeX(), launchOp.blockSizeX(), launchOp.blockSizeX()}), ValueRange({oneindex, oneindex, oneindex}));
   builder.create<mlir::scf::YieldOp>(loc);
   Block* threadB;
     auto iter = threadr.getRegion().getBlocks().begin();
@@ -138,7 +137,7 @@ void ParallelLower::runOnFunction() {
   //builder2.create<mlir::BranchOp>(loc, &*iter);
 
   container.walk([&](mlir::gpu::BlockIdOp bidx) {
-      mlir::OpBuilder bz(f.getContext());
+      mlir::OpBuilder bz(launchOp.getContext());
       bz.setInsertionPoint(bidx);
       int idx = -1;
       if (bidx.dimension() == "x") idx = 0;
@@ -150,7 +149,7 @@ void ParallelLower::runOnFunction() {
   });
 
   container.walk([&](mlir::gpu::ThreadIdOp bidx) {
-      mlir::OpBuilder bz(f.getContext());
+      mlir::OpBuilder bz(launchOp.getContext());
       bz.setInsertionPoint(bidx);
       int idx = -1;
       if (bidx.dimension() == "x") idx = 0;
@@ -161,27 +160,47 @@ void ParallelLower::runOnFunction() {
       bidx.erase();
   });
 
-  container.walk([&](mlir::ReturnOp op) {
-      mlir::OpBuilder bz(f.getContext());
-      bz.setInsertionPoint(op);//, bidx.getParentBlock());
-      auto rep = bz.create<mlir::scf::YieldOp>(loc);
+  container.walk([&](gpu::TerminatorOp op) {
+      mlir::OpBuilder bz(launchOp.getContext());
+      bz.setInsertionPoint(op);
+      bz.create<mlir::scf::YieldOp>(loc);
       op.erase();
   });
+
   container.walk([&](mlir::NVVM::Barrier0Op op) {
-      mlir::OpBuilder bz(f.getContext());
-      bz.setInsertionPoint(op);//, bidx.getParentBlock());
-      auto rep = bz.create<mlir::scf::BarrierOp>(loc);
+      mlir::OpBuilder bz(launchOp.getContext());
+      bz.setInsertionPoint(op);
+      bz.create<mlir::scf::BarrierOp>(loc);
       op.erase();
   });
-  container.walk([&](mlir::memref::AllocaOp op) {
-      if (auto mt = op.getType().dyn_cast<mlir::MemRefType>()) {
-          if (mt.getMemorySpaceAsInt() != 5) return;
-        mlir::OpBuilder bz(f.getContext());
-        bz.setInsertionPointToStart(&block.getRegion().getBlocks().front());//, bidx.getParentBlock());
-        //auto mr = mlir::MemRefType::get(mt.getShape(), mt.getElementType(), mt.getAffineMaps(), 0);     
-        auto rep = bz.create<mlir::memref::AllocaOp>(loc, mt);
-        op.replaceAllUsesWith((mlir::Value)rep);
-        op.erase();
-      }
+
+  container.walk([&](gpu::GridDimOp bidx) {
+    Value val = nullptr;
+    if (bidx.dimension() == "x")
+      val = launchOp.gridSizeX();
+    else if (bidx.dimension() == "y")
+      val = launchOp.gridSizeY();
+    else if (bidx.dimension() == "z")
+      val = launchOp.gridSizeZ();
+    else assert(0 && "illegal dimension");
+    bidx.replaceAllUsesWith(val);
+    bidx.erase();
+  });
+
+  container.walk([&](gpu::BlockDimOp bidx) {
+    Value val = nullptr;
+    if (bidx.dimension() == "x")
+      val = launchOp.blockSizeX();
+    else if (bidx.dimension() == "y")
+      val = launchOp.blockSizeY();
+    else if (bidx.dimension() == "z")
+      val = launchOp.blockSizeZ();
+    else assert(0 && "illegal dimension");
+    bidx.replaceAllUsesWith(val);
+    bidx.erase();
+  });
+
+  launchOp.erase();
+
   });
 }

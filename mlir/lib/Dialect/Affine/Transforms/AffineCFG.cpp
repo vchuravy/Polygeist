@@ -338,15 +338,28 @@ struct MoveLoadToAffine : public OpRewritePattern<memref::LoadOp> {
 
   LogicalResult matchAndRewrite(memref::LoadOp load,
                                 PatternRewriter &rewriter) const override {
-    if (!inAffine(load))
+    if (!inAffine(load) && !llvm::all_of(load.getIndices(), [](mlir::Value V) {
+      return V.getDefiningOp<mlir::ConstantOp>() != nullptr;
+    }))
       return failure();
 
     if (!llvm::all_of(load.getIndices(),
                       [&](Value index) { return isValidIndex(index); }))
       return failure();
 
+    auto memrefType = load.getMemRef().getType().cast<MemRefType>();
+    int64_t rank = memrefType.getRank();
+    // Create identity map for memrefs with at least one dimension or () -> ()
+    // for zero-dimensional memrefs.
+    auto map =
+        rank ? rewriter.getMultiDimIdentityMap(rank) : rewriter.getEmptyAffineMap();
+    SmallVector<Value, 4> operands = load.getIndices();
+
+    fullyComposeAffineMapAndOperands(&map, &operands);
+    canonicalizeMapAndOperands(&map, &operands);
+
     AffineLoadOp affineLoad = rewriter.create<AffineLoadOp>(
-        load.getLoc(), load.getMemRef(), load.getIndices());
+        load.getLoc(), load.getMemRef(), map, operands);
     load.getResult().replaceAllUsesWith(affineLoad.getResult());
     rewriter.eraseOp(load);
     return success();
@@ -358,15 +371,28 @@ struct MoveStoreToAffine : public OpRewritePattern<memref::StoreOp> {
 
   LogicalResult matchAndRewrite(memref::StoreOp store,
                                 PatternRewriter &rewriter) const override {
-    if (!inAffine(store))
+    if (!inAffine(store) && !llvm::all_of(store.getIndices(), [](mlir::Value V) {
+      return V.getDefiningOp<mlir::ConstantOp>() != nullptr;
+    }))
       return failure();
 
     if (!llvm::all_of(store.getIndices(),
                       [&](Value index) { return isValidIndex(index); }))
       return failure();
 
+    auto memrefType = store.getMemRef().getType().cast<MemRefType>();
+    int64_t rank = memrefType.getRank();
+    // Create identity map for memrefs with at least one dimension or () -> ()
+    // for zero-dimensional memrefs.
+    auto map =
+        rank ? rewriter.getMultiDimIdentityMap(rank) : rewriter.getEmptyAffineMap();
+    SmallVector<Value, 4> operands = store.getIndices();
+
+    fullyComposeAffineMapAndOperands(&map, &operands);
+    canonicalizeMapAndOperands(&map, &operands);
+
     rewriter.create<AffineStoreOp>(store.getLoc(), store.getValueToStore(),
-                                   store.getMemRef(), store.getIndices());
+                                   store.getMemRef(), map, operands);
     rewriter.eraseOp(store);
     return success();
   }
@@ -430,6 +456,7 @@ void AffineCFGPass::runOnFunction() {
     }
   });
 
+  /*
   getFunction().walk([](memref::StoreOp store) {
     if (!inAffine(store) && !llvm::all_of(store.getIndices(), [](mlir::Value V) {
       return V.getDefiningOp<mlir::ConstantOp>() != nullptr;
@@ -487,8 +514,8 @@ void AffineCFGPass::runOnFunction() {
 
     replaceLoad(load, newIndices);
   });
+  */
 
-  // getFunction().dump();
   {
     
     mlir::RewritePatternSet rpl(getFunction().getContext());
@@ -498,7 +525,6 @@ void AffineCFGPass::runOnFunction() {
     applyPatternsAndFoldGreedily(getFunction().getOperation(), std::move(rpl),
                                  /*fold*/ false);
   }
-  // getFunction().dump();
 }
 
 std::unique_ptr<OperationPass<FuncOp>> mlir::replaceAffineCFGPass() {

@@ -1330,7 +1330,7 @@ ValueWithOffsets MLIRScanner::VisitCallExpr(clang::CallExpr *expr) {
                 builder.create<mlir::ConstantOp>(
                     loc, allocSize.getType(),
                     builder.getIntegerAttr(allocSize.getType(), elemSize)))};
-            auto alloc = builder.create<mlir::memref::AllocOp>(loc, (sr->getDecl()->getName() == "cudaMalloc") ? mlir::MemRefType::get(shape, mt.getElementType(),
+            auto alloc = builder.create<mlir::memref::AllocOp>(loc, (sr->getDecl()->getName() == "cudaMalloc" && !CudaLower) ? mlir::MemRefType::get(shape, mt.getElementType(),
                                     mt.getAffineMaps(), 1) : mt
                                       , args);
             ValueWithOffsets(dst, /*isReference*/true).store(builder, builder.create<mlir::memref::CastOp>(loc, alloc, mt));
@@ -1590,7 +1590,7 @@ ValueWithOffsets MLIRScanner::VisitCallExpr(clang::CallExpr *expr) {
     mlir::Value blocks[3];
     for (int i=0; i<3; i++) {
       std::vector<mlir::Value> idx = {getConstantIndex(0), getConstantIndex(i)};
-      blocks[i] = builder.create<mlir::memref::LoadOp>(loc, l0.val, idx);
+      blocks[i] = builder.create<IndexCastOp>(loc, builder.create<mlir::memref::LoadOp>(loc, l0.val, idx), mlir::IndexType::get(builder.getContext()));
     }
 
     auto t0 = Visit(CU->getConfig()->getArg(0));
@@ -1598,13 +1598,14 @@ ValueWithOffsets MLIRScanner::VisitCallExpr(clang::CallExpr *expr) {
     mlir::Value threads[3];
     for (int i=0; i<3; i++) {
       std::vector<mlir::Value> idx = {getConstantIndex(0), getConstantIndex(i)};
-      threads[i] = builder.create<mlir::memref::LoadOp>(loc, t0.val, idx);
+      threads[i] = builder.create<IndexCastOp>(loc, builder.create<mlir::memref::LoadOp>(loc, t0.val, idx), mlir::IndexType::get(builder.getContext()));
     }
     auto op = builder.create<mlir::gpu::LaunchOp>(loc, blocks[0], blocks[1], blocks[2], threads[0], threads[1], threads[2]);
     auto oldpoint = builder.getInsertionPoint();
     auto oldblock = builder.getInsertionBlock();
     builder.setInsertionPointToStart(&op.getRegion().front());
     builder.create<mlir::CallOp>(loc, tocall, args);
+    builder.create<gpu::TerminatorOp>(loc);
     builder.setInsertionPoint(oldblock, oldpoint);
     return nullptr;
   }

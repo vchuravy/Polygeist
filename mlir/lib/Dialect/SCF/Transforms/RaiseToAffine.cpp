@@ -84,7 +84,11 @@ struct ForOpRaising : public OpRewritePattern<scf::ForOp> {
         return failure();
 
       // constant should be ok too.
-      if (!llvm::all_of(affineLoop.getOperands(), [this](Value operand) {
+      if (!llvm::all_of(affineLoop.getLowerBoundOperands(), [this](Value operand) {
+            return isValidDim(operand) || isConstantLike(operand);
+          }))
+        return failure();
+      if (!llvm::all_of(affineLoop.getUpperBoundOperands(), [this](Value operand) {
             return isValidDim(operand) || isConstantLike(operand);
           }))
         return failure();
