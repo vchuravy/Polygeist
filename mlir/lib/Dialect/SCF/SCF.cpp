@@ -572,6 +572,85 @@ struct ForOpIterArgsFolder : public OpRewritePattern<scf::ForOp> {
   }
 };
 
+struct ForOpInductionReplacement : public OpRewritePattern<scf::ForOp> {
+  using OpRewritePattern<scf::ForOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(scf::ForOp forOp,
+                                PatternRewriter &rewriter) const final {
+    bool canonicalize = false;
+    Block &block = forOp.region().front();
+    auto yieldOp = cast<scf::YieldOp>(block.getTerminator());
+
+    // An internal flat vector of block transfer
+    // arguments `newBlockTransferArgs` keeps the 1-1 mapping of original to
+    // transformed block argument mappings. This plays the role of a
+    // BlockAndValueMapping for the particular use case of calling into
+    // `mergeBlockBefore`.
+    SmallVector<bool, 4> keepMask;
+    keepMask.reserve(yieldOp.getNumOperands());
+    SmallVector<Value, 4> newBlockTransferArgs, newIterArgs, newYieldValues,
+        newResultValues;
+    newBlockTransferArgs.reserve(1 + forOp.getNumIterOperands());
+    newBlockTransferArgs.push_back(Value()); // iv placeholder with null value
+    newIterArgs.reserve(forOp.getNumIterOperands());
+    newYieldValues.reserve(yieldOp.getNumOperands());
+    newResultValues.reserve(forOp.getNumResults());
+    for (auto it : llvm::zip(forOp.getIterOperands(),   // iter from outside
+                             forOp.getRegionIterArgs(), // iter inside region
+                             forOp.getResults(),        // op results
+                             yieldOp.getOperands()      // iter yield
+                             )) {
+      bool forwarded = true;
+      Value init = std::get<0>(it);
+      if (auto iter_init = forOp.lowerBound().getDefiningOp<ConstantIndexOp>()) {
+        if (auto op = init.getDefiningOp<ConstantOp>()) {
+          if (op.getValue().cast<IntegerAttr>().getValue() != iter_init.getValue()) {
+            forwarded = false;
+          }
+        } else forwarded = false;
+      } else if (init != forOp.lowerBound()) {
+        forwarded = false;
+      }
+
+      AddIOp addOp = std::get<3>(it).getDefiningOp<AddIOp>();
+      if (!addOp)
+        forwarded = false;
+      else {
+        if (addOp.getOperand(0) != std::get<1>(it)) {
+          forwarded = false;
+        } else {
+
+          if (auto iter_step = forOp.step().getDefiningOp<ConstantIndexOp>()) {
+            if (auto op = addOp.getOperand(1).getDefiningOp<ConstantOp>()) {
+              if (op.getValue().cast<IntegerAttr>().getValue() != iter_step.getValue()) {
+                forwarded = false;
+              }
+            } else forwarded = false;
+          } else if (addOp.getOperand(1) != forOp.step()) {
+            forwarded = false;
+          }
+        }
+      }
+      if (forwarded) {
+        Value replacement = forOp.getInductionVar();
+        if (!std::get<1>(it).getType().isa<IndexType>()) {
+          rewriter.setInsertionPointToStart(&forOp.region().front());
+          replacement = rewriter.create<IndexCastOp>(forOp.getLoc(), replacement, std::get<1>(it).getType());
+        }
+        rewriter.updateRootInPlace(forOp, [&]{
+          std::get<1>(it).replaceAllUsesWith(replacement);
+        });
+        canonicalize = true;
+      }
+    }
+
+    if (!canonicalize)
+      return failure();
+
+    return success();
+  }
+};
+
 /// Rewriting pattern that erases loops that are known not to iterate and
 /// replaces single-iteration loops with their bodies.
 struct SimplifyTrivialLoops : public OpRewritePattern<ForOp> {
@@ -941,7 +1020,7 @@ struct RemoveUnusedArgs : public OpRewritePattern<ForOp> {
 
 void ForOp::getCanonicalizationPatterns(RewritePatternSet &results,
                                         MLIRContext *context) {
-  results.add<ForOpIterArgsFolder, SimplifyTrivialLoops, RemoveUnusedArgs,
+  results.add<ForOpInductionReplacement, ForOpIterArgsFolder, SimplifyTrivialLoops, RemoveUnusedArgs,
               LastTensorLoadCanonicalization, ForOpTensorCastFolder>(context);
 }
 

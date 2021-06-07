@@ -250,6 +250,8 @@ static LogicalResult canWrapWithBarriers(Operation *op) {
     return failure();
   }
 
+  llvm::errs() << " considering barrier raise of: " << *op << "\n";
+
   if (op->getNumResults() != 0) {
     LLVM_DEBUG(DBGS() << "[wrap] ignoring loop with reductions\n");
     return failure();
