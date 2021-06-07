@@ -1144,7 +1144,6 @@ struct RemoveUnusedResults : public OpRewritePattern<IfOp> {
     // an else region since the operation returns results).
     transferBody(op.thenRegion(), newOp.thenRegion(), usedResults, rewriter);
     transferBody(op.elseRegion(), newOp.elseRegion(), usedResults, rewriter);
-    newOp.dump();
     // Replace the operation by the new one.
     SmallVector<Value, 4> repResults(op.getNumResults());
     for (auto en : llvm::enumerate(usedResults))
@@ -1625,89 +1624,95 @@ struct MoveWhileToFor : public OpRewritePattern<WhileOp> {
       Value step = nullptr;
     } loopInfo;
 
-    auto condOp = cast<ConditionOp>(loop.before().front().getTerminator());
+    auto condOp = loop.getConditionOp();
     SmallVector<Value, 2> results = {condOp.args()};
-    Operation *maybeCmpIOp = condOp.condition().getDefiningOp();
-    if (!maybeCmpIOp) {
+    auto cmpIOp = condOp.condition().getDefiningOp<CmpIOp>();
+    if (!cmpIOp) {
       llvm::errs() << condOp << "\n";
       llvm::errs() << condOp.condition() << "\n";
       return failure();
     }
-    assert(maybeCmpIOp && "expect non-null");
-    if (auto cmpIOp = dyn_cast<CmpIOp>(maybeCmpIOp)) {
-      Value maybeIndVar = cmpIOp.lhs();
-      if (isTopLevelArgValue(maybeIndVar, &loop.before()))
-        loopInfo.lb =
-            loop.getOperand(maybeIndVar.cast<BlockArgument>().getArgNumber());
-      else
-        return failure();
+    size_t beforeArgNum;
 
-      size_t pos = 0;
-      for (auto res : condOp.args()) {
-        if (res == maybeIndVar)
-          break;
-        pos++;
-      }
-
-      // follow the indVar in the after region.
-      Value maybeIndVarInAfter = loop.after().getArgument(pos);
-      auto users = maybeIndVarInAfter.getUsers();
-
-      for (auto u : users) {
-        // TODO: have something like ConstantLike but for Cast Ops.
-        if (auto castOp = dyn_cast<IndexCastOp>(u))
-          continue;
-        if (auto castOpSiToFp = dyn_cast<SIToFPOp>(u))
-          continue;
-        else if (auto addIOp = dyn_cast<AddIOp>(u)) {
-          if ((addIOp.getOperand(0) != maybeIndVarInAfter) || (loopInfo.step))
-            return failure();
-          loopInfo.step = addIOp.getOperand(1);
-        } else
-          return failure();
-      }
-      Value indVar = maybeIndVar;
-
-      if (isBlockArg(cmpIOp.rhs()) || dominateWhile(cmpIOp.rhs(), loop)) {
-        switch (cmpIOp.getPredicate()) {
-        case CmpIPredicate::slt:
-        case CmpIPredicate::ult: {
-          loopInfo.ub = cmpIOp.rhs();
-          break;
-        }
-        case CmpIPredicate::sle: {
-          // TODO: f32 likely not always true.
-          auto one =
-              rewriter.create<ConstantOp>(loop.getLoc(), rewriter.getI32Type(),
-                                          rewriter.getI32IntegerAttr(1));
-          auto addIOp =
-              rewriter.create<AddIOp>(loop.getLoc(), cmpIOp.rhs(), one);
-          loopInfo.ub = addIOp.getResult();
-          break;
-        }
-        case CmpIPredicate::eq:
-        case CmpIPredicate::sge:
-        case CmpIPredicate::sgt:
-        case CmpIPredicate::ne:
-        case CmpIPredicate::ule:
-        case CmpIPredicate::ugt:
-        case CmpIPredicate::uge: {
-          return failure();
-        }
-        }
-      } else {
-        auto *op = cmpIOp.rhs().getDefiningOp();
-        if (!op || !canMoveOpOutsideWhile(op, loop) ||
-            (op->getNumResults() != 1))
-          return failure();
-        auto newOp = rewriter.clone(*op);
-        loopInfo.ub = newOp->getResult(0);
-        cmpIOp.rhs().replaceAllUsesWith(newOp->getResult(0));
-      }
-
-      loopInfo.indVar = indVar;
-      loopInfo.indVarType = indVar.getType();
+    Value maybeIndVar = cmpIOp.lhs();
+    if (isTopLevelArgValue(maybeIndVar, &loop.before())) {
+      beforeArgNum = maybeIndVar.cast<BlockArgument>().getArgNumber();
+      loopInfo.lb = loop.getOperand(beforeArgNum);
+    } else {
+      llvm::errs() << " non top level arg: " << maybeIndVar << "\n";
+      return failure();
     }
+
+    SmallVector<size_t, 2> afterArgs;
+    for (auto pair : llvm::enumerate(condOp.args())) {
+      if (pair.value() == maybeIndVar)
+        afterArgs.push_back(pair.index());
+    }
+
+    auto endYield = cast<YieldOp>(loop.after().back().getTerminator());
+
+    auto addIOp = endYield.results()[beforeArgNum].getDefiningOp<AddIOp>();
+    if (!addIOp) return failure();
+
+    size_t trueAfterArg;
+    for (auto afterArg : afterArgs) {
+      auto arg = loop.after().getArgument(afterArg);
+      if (addIOp.getOperand(0) == arg) {
+        loopInfo.step = addIOp.getOperand(1);
+        trueAfterArg = afterArg;
+        break;
+      }
+      if (addIOp.getOperand(1) == arg) {
+        loopInfo.step = addIOp.getOperand(0);
+        trueAfterArg = afterArg;
+        break;
+      }
+    }
+
+    if (!loopInfo.step)
+      return failure();
+
+    Value indVar = maybeIndVar;
+
+    if (isBlockArg(cmpIOp.rhs()) || dominateWhile(cmpIOp.rhs(), loop)) {
+      switch (cmpIOp.getPredicate()) {
+      case CmpIPredicate::slt:
+      case CmpIPredicate::ult: {
+        loopInfo.ub = cmpIOp.rhs();
+        break;
+      }
+      case CmpIPredicate::sle: {
+        // TODO: f32 likely not always true.
+        auto one =
+            rewriter.create<ConstantOp>(loop.getLoc(), rewriter.getI32Type(),
+                                        rewriter.getI32IntegerAttr(1));
+        auto addIOp =
+            rewriter.create<AddIOp>(loop.getLoc(), cmpIOp.rhs(), one);
+        loopInfo.ub = addIOp.getResult();
+        break;
+      }
+      case CmpIPredicate::eq:
+      case CmpIPredicate::sge:
+      case CmpIPredicate::sgt:
+      case CmpIPredicate::ne:
+      case CmpIPredicate::ule:
+      case CmpIPredicate::ugt:
+      case CmpIPredicate::uge: {
+        return failure();
+      }
+      }
+    } else {
+      auto *op = cmpIOp.rhs().getDefiningOp();
+      if (!op || !canMoveOpOutsideWhile(op, loop) ||
+          (op->getNumResults() != 1))
+        return failure();
+      auto newOp = rewriter.clone(*op);
+      loopInfo.ub = newOp->getResult(0);
+      cmpIOp.rhs().replaceAllUsesWith(newOp->getResult(0));
+    }
+
+    loopInfo.indVar = indVar;
+    loopInfo.indVarType = indVar.getType();
 
     if ((!loopInfo.ub) || (!loopInfo.lb) || (!loopInfo.step))
       return failure();
@@ -1772,7 +1777,6 @@ struct MoveWhileToFor : public OpRewritePattern<WhileOp> {
                         forloop.getResults().end());
     rewriter.replaceOp(loop, replacements);
     auto m = forloop->getParentOfType<ModuleOp>();
-    m.dump();
     return success();
   }
 };

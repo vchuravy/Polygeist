@@ -169,9 +169,18 @@ int main(int argc, char **argv) {
       optPM.addPass(mlir::createParallelLowerPass());
       optPM.addPass(mlir::createCanonicalizerPass());
       pm.addPass(mlir::createSymbolDCEPass());
+      if (RaiseToAffine) {
+        optPM.addPass(mlir::createCanonicalizeForPass());
+        optPM.addPass(mlir::createCanonicalizerPass());
+        optPM.addPass(mlir::createLoopInvariantCodeMotionPass());
+        optPM.addPass(mlir::createRaiseSCFToAffinePass());
+        optPM.addPass(mlir::replaceAffineCFGPass());
+      }
       optPM.addPass(mlir::createCPUifyPass());
       optPM.addPass(mlir::createCanonicalizerPass());
       pm.addPass(mlir::createSymbolDCEPass());
+      if (DetectReduction)
+        optPM.addPass(mlir::detectReductionPass());
     }
 
     if (EmitLLVM) {
