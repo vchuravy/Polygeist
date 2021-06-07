@@ -12,6 +12,7 @@
 
 #include "PassDetail.h"
  #include "mlir/Analysis/CallGraph.h"
+#include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 #include "mlir/Analysis/AffineAnalysis.h"
 #include "mlir/Analysis/Utils.h"
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
@@ -285,4 +286,10 @@ void ParallelLower::runOnFunction() {
   launchOp.erase();
 
   });
+
+  // Fold the copy memtype cast
+  {
+    mlir::RewritePatternSet rpl(getFunction().getContext());
+    applyPatternsAndFoldGreedily(getFunction().getOperation(), std::move(rpl), /*fold*/ true);
+  }
 }

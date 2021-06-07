@@ -779,10 +779,10 @@ struct CPUifyPass : public SCFCPUifyBase<CPUifyPass> {
                     InterchangeForPFor, InterchangeForPForLoad,
                     InterchangeWhilePFor, NormalizeLoop, NormalizeParallel, RotateWhile, DistributeAroundBarrier>(
         &getContext());
-    GreedyRewriteConfig config;
-    config.maxIterations = 42;
+    //GreedyRewriteConfig config;
+    //config.maxIterations = 42;
     if (failed(applyPatternsAndFoldGreedily(getFunction(), std::move(patterns),
-                                            config)))
+                                            42)))
       signalPassFailure();
   }
 };

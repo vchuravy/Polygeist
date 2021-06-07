@@ -169,6 +169,9 @@ int main(int argc, char **argv) {
       optPM.addPass(mlir::createParallelLowerPass());
       optPM.addPass(mlir::createCanonicalizerPass());
       pm.addPass(mlir::createSymbolDCEPass());
+      optPM.addPass(mlir::createCPUifyPass());
+      optPM.addPass(mlir::createCanonicalizerPass());
+      pm.addPass(mlir::createSymbolDCEPass());
     }
 
     if (EmitLLVM) {
