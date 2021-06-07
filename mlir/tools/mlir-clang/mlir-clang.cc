@@ -165,8 +165,11 @@ int main(int argc, char **argv) {
     optPM.addPass(mlir::createCanonicalizerPass());
     pm.addPass(mlir::createSymbolDCEPass());
 
-    if (CudaLower)
+    if (CudaLower) {
       optPM.addPass(mlir::createParallelLowerPass());
+      optPM.addPass(mlir::createCanonicalizerPass());
+      pm.addPass(mlir::createSymbolDCEPass());
+    }
 
     if (EmitLLVM) {
       pm.addPass(mlir::createLowerAffinePass());

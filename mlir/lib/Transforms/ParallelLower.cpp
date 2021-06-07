@@ -11,6 +11,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "PassDetail.h"
+ #include "mlir/Analysis/CallGraph.h"
 #include "mlir/Analysis/AffineAnalysis.h"
 #include "mlir/Analysis/Utils.h"
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
@@ -75,26 +76,97 @@ std::unique_ptr<OperationPass<FuncOp>> mlir::createParallelLowerPass() {
 
 #include "mlir/Transforms/InliningUtils.h"
 
+struct AlwaysInlinerInterface : public InlinerInterface {
+  using InlinerInterface::InlinerInterface;
+
+  //===--------------------------------------------------------------------===//
+  // Analysis Hooks
+  //===--------------------------------------------------------------------===//
+
+  /// All call operations within standard ops can be inlined.
+  bool isLegalToInline(Operation *call, Operation *callable,
+                       bool wouldBeCloned) const final {
+    return true;
+  }
+
+  /// All operations within standard ops can be inlined.
+  bool isLegalToInline(Region *, Region *, bool,
+                       BlockAndValueMapping &) const final {
+    return true;
+  }
+
+  /// All operations within standard ops can be inlined.
+  bool isLegalToInline(Operation *, Region *, bool,
+                       BlockAndValueMapping &) const final {
+    return true;
+  }
+
+  //===--------------------------------------------------------------------===//
+  // Transformation Hooks
+  //===--------------------------------------------------------------------===//
+
+  /// Handle the given inlined terminator by replacing it with a new operation
+  /// as necessary.
+  void handleTerminator(Operation *op, Block *newDest) const final {
+    // Only "std.return" needs to be handled here.
+    auto returnOp = dyn_cast<ReturnOp>(op);
+    if (!returnOp)
+      return;
+
+    // Replace the return with a branch to the dest.
+    OpBuilder builder(op);
+    builder.create<BranchOp>(op->getLoc(), newDest, returnOp.getOperands());
+    op->erase();
+  }
+
+  /// Handle the given inlined terminator by replacing it with a new operation
+  /// as necessary.
+  void handleTerminator(Operation *op,
+                        ArrayRef<Value> valuesToRepl) const final {
+    // Only "std.return" needs to be handled here.
+    auto returnOp = cast<ReturnOp>(op);
+
+    // Replace the values directly with the return operands.
+    assert(returnOp.getNumOperands() == valuesToRepl.size());
+    for (const auto &it : llvm::enumerate(returnOp.getOperands()))
+      valuesToRepl[it.index()].replaceAllUsesWith(it.value());
+  }
+};
+
 void ParallelLower::runOnFunction() {
+   // The inliner should only be run on operations that define a symbol table,
+   // as the callgraph will need to resolve references.
+   Operation *symbolTableOp = getFunction()->getParentWithTrait<OpTrait::SymbolTable>();
+
+   CallGraph &cg = getAnalysis<CallGraph>();
+   SymbolTableCollection symbolTable;
+   symbolTable.getSymbolTable(symbolTableOp);
+
   // Only supports single block functions at the moment.
   getFunction().walk([&](gpu::LaunchOp launchOp) {
 
-  #if 0
   launchOp.walk([&](CallOp caller) {
-
     // Build the inliner interface.
-    InlinerInterface interface(&getContext());
+    AlwaysInlinerInterface interface(&getContext());
 
-    Region *targetRegion = caller.getCallableForCallee().resolveCallable(&symbolTable).getCallableRegion();
-    inlineCall(
-         interface, caller, cast<CallableOpInterface>(targetRegion->getParentOp()),
-         targetRegion, /*shouldCloneInlinedRegion=*/false);
-
-    // If the inlining was successful then erase the call and callee if
-    // possible.
-    caller.erase();
+    auto callable = caller.getCallableForCallee();//.resolveCallable(symbolTableOp->getTrait<OpTrait::SymbolTable>());//.getCallableRegion();
+    CallableOpInterface callableOp;
+    if (SymbolRefAttr symRef = callable.dyn_cast<SymbolRefAttr>()) {
+      if (!symRef.isa<FlatSymbolRefAttr>())
+        return;
+      auto *symbolOp = symbolTable.lookupNearestSymbolFrom(symbolTableOp,
+                                                           symRef);
+       callableOp = dyn_cast_or_null<CallableOpInterface>(symbolOp);
+    } else {
+      return;
+    }
+    Region* targetRegion = callableOp.getCallableRegion();
+    if (inlineCall(
+         interface, caller, callableOp,
+         targetRegion, /*shouldCloneInlinedRegion=*/true).succeeded()) {
+      caller.erase();
+    }
   });
-  #endif
 
   Block* nb = &launchOp.getRegion().front();
   mlir::OpBuilder builder(launchOp.getContext());
@@ -146,6 +218,16 @@ void ParallelLower::runOnFunction() {
       else assert(0 && "illegal dimension");
       bidx.replaceAllUsesWith((mlir::Value)blockB->getArgument(idx));
       bidx.erase();
+  });
+
+  container.walk([&](mlir::memref::AllocaOp alop) {
+    if (alop.getType().getMemorySpace().cast<IntegerAttr>().getValue() == 5) {
+      mlir::OpBuilder bz(launchOp.getContext());
+      bz.setInsertionPointToStart(blockB);
+      auto newAlloca = bz.create<memref::AllocaOp>(alop.getLoc(), MemRefType::get(alop.getType().getShape(), alop.getType().getElementType(), alop.getType().getAffineMaps(), (uint64_t)0));
+      alop.replaceAllUsesWith((mlir::Value)bz.create<memref::CastOp>(alop.getLoc(), newAlloca, alop.getType()));
+      alop.erase();
+    }
   });
 
   container.walk([&](mlir::gpu::ThreadIdOp bidx) {

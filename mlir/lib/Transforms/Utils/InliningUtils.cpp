@@ -172,7 +172,7 @@ LogicalResult mlir::inlineRegion(InlinerInterface &interface, Region *src,
                                  mapper) ||
       !isLegalToInline(interface, src, insertRegion, shouldCloneInlinedRegion,
                        mapper)) {
-    LLVM_DEBUG(llvm::dbgs() << " + illegal to inline region interface legality: " <<
+    LLVM_DEBUG(llvm::dbgs() << " + illegal to inline region interface legality: int=" << ((void*)&interface) << " " <<
       (bool)interface.isLegalToInline(insertRegion, src, shouldCloneInlinedRegion,
                                  mapper) << " general legality: " << 
                                  (bool)isLegalToInline(interface, src, insertRegion, shouldCloneInlinedRegion,
