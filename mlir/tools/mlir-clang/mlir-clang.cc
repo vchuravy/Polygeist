@@ -166,6 +166,7 @@ int main(int argc, char **argv) {
     pm.addPass(mlir::createSymbolDCEPass());
 
     if (CudaLower) {
+      optPM.addPass(mlir::createLoopInvariantCodeMotionPass());
       optPM.addPass(mlir::createParallelLowerPass());
       optPM.addPass(mlir::createCanonicalizerPass());
       pm.addPass(mlir::createSymbolDCEPass());

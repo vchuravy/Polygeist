@@ -166,6 +166,9 @@ void ParallelLower::runOnFunction() {
          interface, caller, callableOp,
          targetRegion, /*shouldCloneInlinedRegion=*/true).succeeded()) {
       caller.erase();
+      if (callableOp->use_empty()) {
+        callableOp.erase();
+      }
     }
   });
 
@@ -187,7 +190,7 @@ void ParallelLower::runOnFunction() {
   }
   builder.setInsertionPointToStart(blockB);
 
-  auto threadr = builder.create<mlir::scf::ParallelOp>(loc, ValueRange({zindex, zindex, zindex}), ValueRange({launchOp.blockSizeX(), launchOp.blockSizeX(), launchOp.blockSizeX()}), ValueRange({oneindex, oneindex, oneindex}));
+  auto threadr = builder.create<mlir::scf::ParallelOp>(loc, ValueRange({zindex, zindex, zindex}), ValueRange({launchOp.blockSizeX(), launchOp.blockSizeY(), launchOp.blockSizeZ()}), ValueRange({oneindex, oneindex, oneindex}));
   builder.create<mlir::scf::YieldOp>(loc);
   Block* threadB;
     auto iter = threadr.getRegion().getBlocks().begin();
@@ -287,6 +290,7 @@ void ParallelLower::runOnFunction() {
 
   });
 
+  getFunction().dump();
   // Fold the copy memtype cast
   {
     mlir::RewritePatternSet rpl(getFunction().getContext());

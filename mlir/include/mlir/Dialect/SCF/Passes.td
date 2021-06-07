@@ -26,7 +26,8 @@ def SCFForLoopSpecialization
 def SCFCPUify : FunctionPass<"cpuify"> {
   let summary = "remove scf.barrier";
   let constructor = "mlir::createCPUifyPass()";
-  let dependentDialects = ["memref::MemRefDialect", "StandardOpsDialect"];
+  let dependentDialects = ["memref::MemRefDialect", "StandardOpsDialect",
+                           "LLVM::LLVMDialect"];
 }
 
 def SCFParallelLoopFusion : Pass<"parallel-loop-fusion"> {

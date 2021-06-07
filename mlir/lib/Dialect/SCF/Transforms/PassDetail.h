@@ -24,6 +24,10 @@ class MemRefDialect;
 
 class StandardOpsDialect;
 
+namespace LLVM {
+class LLVMDialect;
+}
+
 #define GEN_PASS_CLASSES
 #include "mlir/Dialect/SCF/Passes.h.inc"
 

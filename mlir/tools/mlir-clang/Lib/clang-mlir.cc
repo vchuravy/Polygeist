@@ -255,6 +255,12 @@ ValueWithOffsets MLIRScanner::VisitVarDecl(clang::VarDecl *decl) {
         }
       }
     }
+  } else if (auto ava = decl->getAttr<InitPriorityAttr>()) {
+          if (ava->getPriority() == 8192) {
+            llvm::Type *T = Glob.CGM.getTypes().ConvertType(decl->getType());
+            subType = Glob.typeTranslator.translateType(T);
+            LLVMABI = true;
+          }
   }
 
   auto op = createAllocOp(subType, decl->getName().str(), memtype, isArray, LLVMABI);
@@ -1319,9 +1325,9 @@ ValueWithOffsets MLIRScanner::VisitCallExpr(clang::CallExpr *expr) {
             auto shape = std::vector<int64_t>(mt.getShape());
 
             auto elemSize =
-                getTypeSize(cast<clang::PointerType>(
+                getTypeSize(cast<clang::PointerType>(cast<clang::PointerType>(
                                 BC->getSubExpr()->getType()->getUnqualifiedDesugaredType())
-                                ->getPointeeType());
+                                ->getPointeeType())->getPointeeType());
             mlir::Value allocSize = builder.create<mlir::IndexCastOp>(
                 loc, Visit(expr->getArg(1)).getValue(builder),
                 mlir::IndexType::get(builder.getContext()));
@@ -1344,14 +1350,50 @@ ValueWithOffsets MLIRScanner::VisitCallExpr(clang::CallExpr *expr) {
               if (auto BCsrc = dyn_cast<clang::CastExpr>(expr->getArg(1))) {
               auto dst = Visit(BCdst->getSubExpr()).getValue(builder);
               auto src = Visit(BCsrc->getSubExpr()).getValue(builder);
-              builder.create<mlir::gpu::MemcpyOp>(loc, mlir::TypeRange(), std::vector<mlir::Value>({dst, src}));
-              llvm::errs() << " warning memcpy not propagating directions\n";
-              return ValueWithOffsets(getConstantIndex(0), /*isReference*/ false);
+
+            auto elemSize =
+                getTypeSize(cast<clang::PointerType>(
+                                BCdst->getSubExpr()->getType()->getUnqualifiedDesugaredType())
+                                ->getPointeeType());
+            mlir::Value size = builder.create<mlir::IndexCastOp>(
+                loc, Visit(expr->getArg(2)).getValue(builder),
+                mlir::IndexType::get(builder.getContext()));
+            size = {builder.create<mlir::UnsignedDivIOp>(
+                loc, size,
+                builder.create<mlir::ConstantIndexOp>(
+                    loc, elemSize))};
+                    
+            auto affineOp = builder.create<AffineForOp>(
+                loc, std::vector<mlir::Value>({getConstantIndex(0)}), builder.getSymbolIdentityMap(), 
+                std::vector<mlir::Value>({size}),
+                builder.getSymbolIdentityMap());
+
+            auto &reg = affineOp.getLoopBody();
+
+            auto val = (mlir::Value)affineOp.getInductionVar();
+
+            reg.front().clear();
+
+            auto oldpoint = builder.getInsertionPoint();
+            auto oldblock = builder.getInsertionBlock();
+
+            builder.setInsertionPointToEnd(&reg.front());
+
+            builder.create<AffineStoreOp>(loc, builder.create<AffineLoadOp>(loc, src, std::vector<mlir::Value>({val})), dst, std::vector<mlir::Value>({val}));
+
+            builder.create<AffineYieldOp>(loc);
+
+            // TODO: set the value of the iteration value to the final bound at the
+            // end of the loop.
+            builder.setInsertionPoint(oldblock, oldpoint);
+
+            return ValueWithOffsets(getConstantIndex(0), /*isReference*/ false);
         }
 
   auto callee = EmitCallee(expr->getCallee());
   std::set<std::string> funcs = {"strcmp", "open",   "fopen", "memset", "strcpy",
-                                 "close",  "fclose", "atoi", "malloc", "calloc", "fgets", "__assert_fail"};
+                                 "close",  "fclose", "atoi", "malloc", "calloc", "fgets", "__assert_fail",
+                                 "cudaEventElapsedTime", "cudaEventSynchronize", "cudaEventRecord"};
   if (auto ic = dyn_cast<ImplicitCastExpr>(expr->getCallee()))
     if (auto sr = dyn_cast<DeclRefExpr>(ic->getSubExpr())) {
       if ((sr->getDecl()->getIdentifier() && funcs.count(sr->getDecl()->getName().str())) ||
@@ -1593,7 +1635,7 @@ ValueWithOffsets MLIRScanner::VisitCallExpr(clang::CallExpr *expr) {
       blocks[i] = builder.create<IndexCastOp>(loc, builder.create<mlir::memref::LoadOp>(loc, l0.val, idx), mlir::IndexType::get(builder.getContext()));
     }
 
-    auto t0 = Visit(CU->getConfig()->getArg(0));
+    auto t0 = Visit(CU->getConfig()->getArg(1));
     assert(t0.isReference);
     mlir::Value threads[3];
     for (int i=0; i<3; i++) {
