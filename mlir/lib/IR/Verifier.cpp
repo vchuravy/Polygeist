@@ -249,6 +249,7 @@ LogicalResult OperationVerifier::verifyOperation(Operation &op) {
 /// Emit an error when the specified operand of the specified operation is an
 /// invalid use because of dominance properties.
 static void diagnoseInvalidOperandDominance(Operation &op, unsigned operandNo) {
+  op.dump();
   InFlightDiagnostic diag = op.emitError("operand #")
                             << operandNo << " does not dominate this use";
 

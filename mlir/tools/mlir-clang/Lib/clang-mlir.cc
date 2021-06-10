@@ -230,7 +230,6 @@ ValueWithOffsets MLIRScanner::VisitVarDecl(clang::VarDecl *decl) {
         decl->dump();
       }
       if (isArray) {
-        init->dump();
         assert(visit.isReference);
         inite = visit.val;
       } else {
@@ -565,6 +564,72 @@ ValueWithOffsets MLIRScanner::VisitWhileStmt(clang::WhileStmt *fors) {
   toadd->getBlocks().push_back(&exitB);
 
   builder.create<mlir::BranchOp>(loc, &condB);
+
+  builder.setInsertionPointToStart(&condB);
+
+  if (auto s = fors->getCond()) {
+    auto condRes = Visit(s);
+    auto cond = condRes.getValue(builder);
+    if (auto LT = cond.getType().dyn_cast<mlir::LLVM::LLVMPointerType>()) {
+      auto nullptr_llvm = builder.create<mlir::LLVM::NullOp>(loc, LT);
+      cond = builder.create<mlir::LLVM::ICmpOp>(
+          loc, mlir::LLVM::ICmpPredicate::ne, cond, nullptr_llvm);
+    }
+    auto ty = cond.getType().cast<mlir::IntegerType>();
+    if (ty.getWidth() != 1) {
+      ty = builder.getIntegerType(1);
+      cond = builder.create<mlir::TruncateIOp>(loc, cond, ty);
+    }
+    auto nb = builder.create<mlir::memref::LoadOp>(loc, loops.back().noBreak,
+                                                   std::vector<mlir::Value>());
+    cond = builder.create<mlir::AndOp>(loc, cond, nb);
+    builder.create<mlir::CondBranchOp>(loc, cond, &bodyB, &exitB);
+  }
+
+  builder.setInsertionPointToStart(&bodyB);
+  builder.create<mlir::memref::StoreOp>(
+      loc,
+      builder.create<mlir::memref::LoadOp>(loc, loops.back().noBreak,
+                                           std::vector<mlir::Value>()),
+      loops.back().keepRunning, std::vector<mlir::Value>());
+
+  Visit(fors->getBody());
+  loops.pop_back();
+  // if (builder.getInsertionBlock()->empty() ||
+  //    builder.getInsertionBlock()->back().isKnownNonTerminator()) {
+  builder.create<mlir::BranchOp>(loc, &condB);
+  //}
+
+  builder.setInsertionPointToStart(&exitB);
+
+  scopes.pop_back();
+  return nullptr;
+}
+
+ValueWithOffsets MLIRScanner::VisitDoStmt(clang::DoStmt *fors) {
+  IfScope scope(*this);
+  scopes.emplace_back();
+
+  auto loc = getMLIRLocation(fors->getDoLoc());
+
+  auto i1Ty = builder.getIntegerType(1);
+  auto type = mlir::MemRefType::get({}, i1Ty, {}, 0);
+  auto truev = builder.create<mlir::ConstantOp>(
+      loc, i1Ty, builder.getIntegerAttr(i1Ty, 1));
+  loops.push_back(
+      (LoopContext){builder.create<mlir::memref::AllocaOp>(loc, type),
+                    builder.create<mlir::memref::AllocaOp>(loc, type)});
+  builder.create<mlir::memref::StoreOp>(loc, truev, loops.back().noBreak);
+
+  auto toadd = builder.getInsertionBlock()->getParent();
+  auto &condB = *(new Block());
+  toadd->getBlocks().push_back(&condB);
+  auto &bodyB = *(new Block());
+  toadd->getBlocks().push_back(&bodyB);
+  auto &exitB = *(new Block());
+  toadd->getBlocks().push_back(&exitB);
+
+  builder.create<mlir::BranchOp>(loc, &bodyB);
 
   builder.setInsertionPointToStart(&condB);
 
@@ -1321,7 +1386,6 @@ ValueWithOffsets MLIRScanner::VisitCallExpr(clang::CallExpr *expr) {
               auto dst = Visit(BC->getSubExpr()).getValue(builder);
               auto omt = dst.getType().dyn_cast<MemRefType>();
               auto mt = omt.getElementType().dyn_cast<MemRefType>();
-              auto mt1 = omt.getElementType().dyn_cast<MemRefType>();
             auto shape = std::vector<int64_t>(mt.getShape());
 
             auto elemSize =
@@ -1351,10 +1415,16 @@ ValueWithOffsets MLIRScanner::VisitCallExpr(clang::CallExpr *expr) {
               auto dst = Visit(BCdst->getSubExpr()).getValue(builder);
               auto src = Visit(BCsrc->getSubExpr()).getValue(builder);
 
-            auto elemSize =
-                getTypeSize(cast<clang::PointerType>(
+            auto elem = cast<clang::PointerType>(
                                 BCdst->getSubExpr()->getType()->getUnqualifiedDesugaredType())
-                                ->getPointeeType());
+                                ->getPointeeType();
+            bool isArray = false;
+            auto LLTy = getLLVMType(elem);
+            if (!Glob.getMLIRType(llvm::PointerType::getUnqual(LLTy)).isa<mlir::LLVM::LLVMPointerType>() && isa<llvm::StructType>(LLTy)) {
+              isArray = true;
+            }
+            auto elemSize =
+                getTypeSize(elem);
             mlir::Value size = builder.create<mlir::IndexCastOp>(
                 loc, Visit(expr->getArg(2)).getValue(builder),
                 mlir::IndexType::get(builder.getContext()));
@@ -1363,25 +1433,34 @@ ValueWithOffsets MLIRScanner::VisitCallExpr(clang::CallExpr *expr) {
                 builder.create<mlir::ConstantIndexOp>(
                     loc, elemSize))};
                     
+            std::vector<mlir::Value> start = {getConstantIndex(0)};
+            std::vector<mlir::Value> sizes = {size};
+            AffineMap map = builder.getSymbolIdentityMap();
             auto affineOp = builder.create<AffineForOp>(
-                loc, std::vector<mlir::Value>({getConstantIndex(0)}), builder.getSymbolIdentityMap(), 
-                std::vector<mlir::Value>({size}),
-                builder.getSymbolIdentityMap());
-
-            auto &reg = affineOp.getLoopBody();
-
-            auto val = (mlir::Value)affineOp.getInductionVar();
-
-            reg.front().clear();
+                loc, start, map, 
+                sizes, map);
 
             auto oldpoint = builder.getInsertionPoint();
             auto oldblock = builder.getInsertionBlock();
 
-            builder.setInsertionPointToEnd(&reg.front());
+            std::vector<mlir::Value> args = {affineOp.getInductionVar()};
 
-            builder.create<AffineStoreOp>(loc, builder.create<AffineLoadOp>(loc, src, std::vector<mlir::Value>({val})), dst, std::vector<mlir::Value>({val}));
+            builder.setInsertionPointToStart(&affineOp.getLoopBody().front());
 
-            builder.create<AffineYieldOp>(loc);
+            if (isArray) {
+              std::vector<mlir::Value> start = {getConstantIndex(0)};
+              auto mt = Glob.getMLIRType(llvm::PointerType::getUnqual(LLTy)).cast<MemRefType>();
+              auto shape = std::vector<int64_t>(mt.getShape());
+              std::vector<mlir::Value> sizes = {getConstantIndex(shape[1])};
+              AffineMap map = builder.getSymbolIdentityMap();
+              auto affineOp = builder.create<AffineForOp>(
+                  loc, start, map, 
+                  sizes, map);
+              args.push_back(affineOp.getInductionVar());
+              builder.setInsertionPointToStart(&affineOp.getLoopBody().front());
+            }
+            
+            builder.create<AffineStoreOp>(loc, builder.create<AffineLoadOp>(loc, src, args), dst, args);
 
             // TODO: set the value of the iteration value to the final bound at the
             // end of the loop.
@@ -3225,7 +3304,6 @@ mlir::LLVM::GlobalOp MLIRASTConsumer::GetOrCreateLLVMGlobal(const ValueDecl *FD)
 
 std::pair<mlir::memref::GlobalOp, bool>
 MLIRASTConsumer::GetOrCreateGlobal(const ValueDecl *FD) {
-  FD->dump();
   std::string name = CGM.getMangledName(FD).str();
 
   if (globals.find(name) != globals.end()) {
@@ -3487,6 +3565,10 @@ mlir::Type MLIRASTConsumer::getMLIRType(clang::QualType t) {
       llvm::Type *T = CGM.getTypes().ConvertType(t);
       return typeTranslator.translateType(T);
     }
+    if (PT->getPointeeType()->isBooleanType()) {
+      OpBuilder builder(module);
+      return MemRefType::get(-1, builder.getIntegerType(1), {});
+    }
   }
   llvm::Type *T = CGM.getTypes().ConvertType(t);
   return getMLIRType(T);
@@ -3669,7 +3751,7 @@ llvm::Type *MLIRScanner::getLLVMType(clang::QualType t) {
 
 size_t MLIRScanner::getTypeSize(clang::QualType t) {
   llvm::Type *T = Glob.CGM.getTypes().ConvertType(t);
-  return Glob.llvmMod.getDataLayout().getTypeSizeInBits(T) / 8;
+  return (Glob.llvmMod.getDataLayout().getTypeSizeInBits(T) + 7) / 8;
 }
 
 std::string GetExecutablePath(const char *Argv0, bool CanonicalPrefixes) {

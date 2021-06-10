@@ -701,7 +701,7 @@ bool Mem2Reg::forwardStoreToLoad(mlir::Value AI, std::vector<ssize_t> idx,
         std::vector<Value> args(op.getOperands().begin(),
                                 op.getOperands().end());
         args.push_back(pval);
-        auto op2 = subbuilder.create<BranchOp>(op.getLoc(), op.getDest(), args);
+        subbuilder.create<BranchOp>(op.getLoc(), op.getDest(), args);
         // op.replaceAllUsesWith(op2);
         op.erase();
       } else if (auto op = dyn_cast<CondBranchOp>(pred->getTerminator())) {
@@ -717,7 +717,7 @@ bool Mem2Reg::forwardStoreToLoad(mlir::Value AI, std::vector<ssize_t> idx,
         if (op.getFalseDest() == block) {
           falseargs.push_back(pval);
         }
-        auto op2 = subbuilder.create<CondBranchOp>(
+        subbuilder.create<CondBranchOp>(
             op.getLoc(), op.getCondition(), op.getTrueDest(), trueargs,
             op.getFalseDest(), falseargs);
         // op.replaceAllUsesWith(op2);
@@ -891,8 +891,7 @@ bool Mem2Reg::forwardStoreToLoad(mlir::Value AI, std::vector<ssize_t> idx,
                                     op.getOperands().end());
             args.erase(args.begin() + blockArg.getArgNumber());
             assert(args.size() == op.getOperands().size() - 1);
-            auto newBranch =
-                subbuilder.create<BranchOp>(op.getLoc(), op.getDest(), args);
+            subbuilder.create<BranchOp>(op.getLoc(), op.getDest(), args);
             op.erase();
           }
           if (auto op = dyn_cast<CondBranchOp>(pred->getTerminator())) {
@@ -910,7 +909,7 @@ bool Mem2Reg::forwardStoreToLoad(mlir::Value AI, std::vector<ssize_t> idx,
             }
             assert(trueargs.size() < op.getTrueOperands().size() ||
                    falseargs.size() < op.getFalseOperands().size());
-            auto newBranch = subbuilder.create<CondBranchOp>(
+            subbuilder.create<CondBranchOp>(
                 op.getLoc(), op.getCondition(), op.getTrueDest(), trueargs,
                 op.getFalseDest(), falseargs);
             op.erase();
@@ -1059,7 +1058,6 @@ void Mem2Reg::runOnFunction() {
   // memrefs etc, we may need to do multiple passes (first
   // to eliminate the outermost one, then inner ones)
   bool changed;
-  f.dump();
   FuncOp freeRemoved = nullptr;
   do {
     changed = false;

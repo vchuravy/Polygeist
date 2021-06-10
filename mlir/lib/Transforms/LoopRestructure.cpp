@@ -104,7 +104,7 @@ namespace {
 
 struct LoopRestructure : public mlir::LoopRestructureBase<LoopRestructure> {
   void runOnRegion(DominanceInfo &domInfo, Region &region);
-  void removeIfFromRegion(DominanceInfo &domInfo, Region &region,
+  bool removeIfFromRegion(DominanceInfo &domInfo, Region &region,
                           Block *pseudoExit);
   void runOnFunction() override;
 };
@@ -157,11 +157,38 @@ bool attemptToFoldIntoPredecessor(Block *target) {
       target->erase();
       return true;
     }
+  } else if (P.size() == 2) {
+    if (auto op = dyn_cast<CondBranchOp>(P[0]->getTerminator())) {
+      assert(target->getNumArguments() == op.getNumTrueOperands());
+      assert(target->getNumArguments() == op.getNumFalseOperands());
+
+      mlir::OpBuilder builder(op);
+      SmallVector<mlir::Type> types;
+      for(auto T : op.getTrueOperands()) {
+        types.push_back(T.getType());
+      }
+      auto sel = builder.create<mlir::scf::IfOp>(op.getLoc(), types, op.getCondition(), /*hasElse*/true);
+
+      auto tbuilder = sel.getThenBodyBuilder();
+      tbuilder.create<mlir::scf::YieldOp>(op.getLoc(), op.getTrueOperands());
+
+      auto fbuilder = sel.getElseBodyBuilder();
+      fbuilder.create<mlir::scf::YieldOp>(op.getLoc(), op.getFalseOperands());
+      
+      for (size_t i = 0; i < target->getNumArguments(); ++i) {
+        target->getArgument(i).replaceAllUsesWith(sel.getResult(i));
+      }
+      P[0]->getOperations().splice(P[0]->getOperations().end(),
+                                   target->getOperations());
+      op->erase();
+      target->erase();
+      return true;
+    }
   }
   return false;
 }
 
-void LoopRestructure::removeIfFromRegion(DominanceInfo &domInfo, Region &region,
+bool LoopRestructure::removeIfFromRegion(DominanceInfo &domInfo, Region &region,
                                          Block *pseudoExit) {
   SmallVector<Block *, 4> Preds;
   for (auto block : pseudoExit->getPredecessors()) {
@@ -240,12 +267,13 @@ void LoopRestructure::removeIfFromRegion(DominanceInfo &domInfo, Region &region,
             condBr->erase();
 
             pseudoExit->erase();
-            return;
+            return true;
           }
         }
       }
     }
   }
+  return false;
 }
 
 void LoopRestructure::runOnRegion(DominanceInfo &domInfo, Region &region) {
@@ -261,6 +289,12 @@ void LoopRestructure::runOnRegion(DominanceInfo &domInfo, Region &region) {
         llvm::errs() << " found mlir loop with more than one exit, skipping. \n";
         continue;
       }
+
+      // Replace branch to exit block with a new block that calls
+      // loop.natural.return In caller block, branch to correct exit block
+      SmallVector<Block *, 4> exitingBlocks;
+      L->getExitingBlocks(exitingBlocks);
+
       // TODO: Support multiple exit blocks
       //  - Easy case all exit blocks have the same argument set
 
@@ -275,6 +309,7 @@ void LoopRestructure::runOnRegion(DominanceInfo &domInfo, Region &region) {
       for (auto arg : header->getArguments()) {
         headerArgumentTypes.push_back(arg.getType());
       }
+      // TODO values used outside loop should be wrapped.
       wrapper->addArguments(headerArgumentTypes);
 
       SmallVector<Type, 4> combinedTypes(headerArgumentTypes.begin(),
@@ -311,10 +346,6 @@ void LoopRestructure::runOnRegion(DominanceInfo &domInfo, Region &region) {
         }
       }
 
-      // Replace branch to exit block with a new block that calls
-      // loop.natural.return In caller block, branch to correct exit block
-      SmallVector<Block *, 4> exitingBlocks;
-      L->getExitingBlocks(exitingBlocks);
 
       Block *pseudoExit = new Block();
       auto i1Ty = builder.getI1Type();
@@ -369,7 +400,6 @@ void LoopRestructure::runOnRegion(DominanceInfo &domInfo, Region &region) {
                   falseargs);
               op.erase();
             }
-            break;
           }
         }
       }
@@ -417,7 +447,7 @@ void LoopRestructure::runOnRegion(DominanceInfo &domInfo, Region &region) {
               if (op.getFalseDest() == header) {
                 falseargs.insert(falseargs.begin(), vtrue);
                 for (auto ty : returns) {
-                  trueargs.push_back(builder.create<mlir::LLVM::UndefOp>(
+                  falseargs.push_back(builder.create<mlir::LLVM::UndefOp>(
                       builder.getUnknownLoc(), ty));
                 }
               }
@@ -464,7 +494,9 @@ void LoopRestructure::runOnRegion(DominanceInfo &domInfo, Region &region) {
       builder2.create<scf::YieldOp>(builder.getUnknownLoc(), yieldargs);
       domInfo.recalculate(loop.getOperation());
       runOnRegion(domInfo, loop.before());
-      removeIfFromRegion(domInfo, loop.before(), pseudoExit);
+      if (!removeIfFromRegion(domInfo, loop.before(), pseudoExit)) {
+        attemptToFoldIntoPredecessor(pseudoExit);
+      }
 
       attemptToFoldIntoPredecessor(wrapper);
       attemptToFoldIntoPredecessor(target);

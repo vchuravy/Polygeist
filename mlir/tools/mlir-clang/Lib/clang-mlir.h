@@ -259,8 +259,8 @@ struct MLIRASTConsumer : public ASTConsumer {
   std::set<std::string> &done;
   std::map<std::string, mlir::LLVM::GlobalOp> &llvmStringGlobals;
   std::map<std::string, std::pair<mlir::memref::GlobalOp, bool>> &globals;
-  std::map<std::string, mlir::LLVM::LLVMFuncOp> &llvmFunctions;
   std::map<std::string, mlir::FuncOp> &functions;
+  std::map<std::string, mlir::LLVM::LLVMFuncOp> &llvmFunctions;
   Preprocessor &PP;
   ASTContext &astContext;
   mlir::ModuleOp &module;
@@ -540,6 +540,7 @@ public:
   ValueWithOffsets VisitForStmt(clang::ForStmt *fors);
 
   ValueWithOffsets VisitWhileStmt(clang::WhileStmt *fors);
+  ValueWithOffsets VisitDoStmt(clang::DoStmt *fors);
 
   ValueWithOffsets VisitArraySubscriptExpr(clang::ArraySubscriptExpr *expr);
 
