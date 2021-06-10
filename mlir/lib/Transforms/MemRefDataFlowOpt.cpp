@@ -119,6 +119,9 @@ bool hasNoInterveningStore(Operation *start, AffineReadOpInterface loadOp) {
         legal = false;
         return;
       }
+    } else {
+      legal = false;
+      return;
     }
 
     if (op->hasTrait<OpTrait::HasRecursiveSideEffects>()) {
@@ -227,6 +230,9 @@ bool hasNoInterveningLoad(AffineWriteOpInterface start,
         legal = false;
         return;
       }
+    } else {
+      legal = false;
+      return;
     }
 
     if (op->hasTrait<OpTrait::HasRecursiveSideEffects>()) {
@@ -416,7 +422,6 @@ void MemRefDataFlowOpt::forwardStoreToLoad(
     }
 
     bool legal = hasNoInterveningStore(storeOp, loadOp);
-    // llvm::errs() << " + " << *storeOp << " legal: " << legal << "\n";
     if (!legal)
       continue;
 
@@ -503,7 +508,7 @@ void MemRefDataFlowOpt::forwardLoadToLoad(
 void MemRefDataFlowOpt::runOnFunction() {
   // Only supports single block functions at the moment.
   FuncOp f = getFunction();
-  // f.dump();
+  
   // if (!llvm::hasSingleElement(f)) {
   //  markAllAnalysesPreserved();
   //  return;
@@ -570,5 +575,4 @@ void MemRefDataFlowOpt::runOnFunction() {
       user->erase();
     defOp->erase();
   }
-  // f.dump();
 }

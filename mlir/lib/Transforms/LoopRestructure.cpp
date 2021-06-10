@@ -167,16 +167,10 @@ bool attemptToFoldIntoPredecessor(Block *target) {
       for(auto T : op.getTrueOperands()) {
         types.push_back(T.getType());
       }
-      auto sel = builder.create<mlir::scf::IfOp>(op.getLoc(), types, op.getCondition(), /*hasElse*/true);
-
-      auto tbuilder = sel.getThenBodyBuilder();
-      tbuilder.create<mlir::scf::YieldOp>(op.getLoc(), op.getTrueOperands());
-
-      auto fbuilder = sel.getElseBodyBuilder();
-      fbuilder.create<mlir::scf::YieldOp>(op.getLoc(), op.getFalseOperands());
       
       for (size_t i = 0; i < target->getNumArguments(); ++i) {
-        target->getArgument(i).replaceAllUsesWith(sel.getResult(i));
+        auto sel = builder.create<mlir::SelectOp>(op.getLoc(), op.getCondition(), op.getTrueOperand(i), op.getFalseOperand(i));
+        target->getArgument(i).replaceAllUsesWith(sel);
       }
       P[0]->getOperations().splice(P[0]->getOperations().end(),
                                    target->getOperations());
