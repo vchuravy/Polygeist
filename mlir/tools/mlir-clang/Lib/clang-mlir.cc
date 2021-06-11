@@ -106,6 +106,7 @@ ValueWithOffsets MLIRScanner::VisitDeclStmt(clang::DeclStmt *decl) {
   for (auto sub : decl->decls()) {
     if (auto vd = dyn_cast<VarDecl>(sub)) {
       VisitVarDecl(vd);
+    } else if (isa<TypeAliasDecl>(sub)) {
     } else {
       llvm::errs() << " + visiting unknonwn sub decl stmt\n";
       sub->dump();
@@ -117,6 +118,13 @@ ValueWithOffsets MLIRScanner::VisitDeclStmt(clang::DeclStmt *decl) {
 
 
 ValueWithOffsets MLIRScanner::VisitConstantExpr(clang::ConstantExpr *expr) {
+  if (expr->hasAPValueResult()) {
+    auto ty = getMLIRType(expr->getType()).cast<mlir::IntegerType>();
+    return ValueWithOffsets(
+        builder.create<mlir::ConstantOp>(
+            loc, ty, builder.getIntegerAttr(ty, expr->getAPValueResult().getInt())),
+        /*isReference*/ false);
+  }
   return Visit(expr->getSubExpr());
 }
 ValueWithOffsets MLIRScanner::VisitIntegerLiteral(clang::IntegerLiteral *expr) {
@@ -320,9 +328,17 @@ ValueWithOffsets MLIRScanner::VisitPredefinedExpr(clang::PredefinedExpr *expr) {
   return VisitStringLiteral(expr->getFunctionName());
 }
 
+ValueWithOffsets MLIRScanner::VisitLambdaExpr(clang::LambdaExpr *expr) {
+  expr->dump();
+  assert(0 && " lambda expr unhandled");
+}
+
 // TODO actually deallocate
 ValueWithOffsets MLIRScanner::VisitMaterializeTemporaryExpr(clang::MaterializeTemporaryExpr *expr) {
   auto v = Visit(expr->getSubExpr());
+  if (!v.val) {
+    expr->dump();
+  }
   assert(v.val);
 
   bool isArray = isa<clang::ArrayType>(expr->getSubExpr()->getType());
@@ -1582,10 +1598,14 @@ ValueWithOffsets MLIRScanner::VisitCallExpr(clang::CallExpr *expr) {
   size_t i = 0;
   if (auto CC = dyn_cast<CXXMemberCallExpr>(expr)) {
     auto arg = Visit(CC->getImplicitObjectArgument());
-    if (!arg.val) {
+    if (!arg.val || true) {
+      function.dump();
+      llvm::errs() << " av: " << arg.val << "\n";
       expr->dump();
       CC->getImplicitObjectArgument()->dump();
     }
+    if (cast<MemberExpr>(CC->getCallee()->IgnoreParens())->isArrow())
+      arg = arg.dereference(builder);
     assert(arg.val);
     assert(arg.isReference);
     args.push_back(arg.val);
@@ -2561,6 +2581,7 @@ ValueWithOffsets MLIRScanner::VisitDeclRefExpr(DeclRefExpr *E) {
     }
   }
 
+  E->getDecl()->dump();
   if (auto PD = dyn_cast<ParmVarDecl>(E->getDecl())) {
     return params[PD->getFunctionScopeIndex()];
   }
@@ -2587,11 +2608,6 @@ ValueWithOffsets MLIRScanner::VisitDeclRefExpr(DeclRefExpr *E) {
     else
       return ValueWithOffsets(gv2, /*isReference*/ true);
     // return gv2;
-  }
-  if (Glob.globalFunctions.find(name) != Glob.globalFunctions.end()) {
-    auto gv = Glob.GetOrCreateMLIRFunction(Glob.globalFunctions[name]);
-    // TODO, how to represent?
-    // return ValueWithOffsets(gv, std::vector<mlir::Value>());
   }
   E->dump();
   E->getDecl()->dump();
@@ -2628,7 +2644,7 @@ ValueWithOffsets MLIRScanner::VisitCXXDefaultInitExpr(clang::CXXDefaultInitExpr 
     }
     assert(thisV.val);
     mlir::Value toset = Visit(expr->getExpr()).getValue(builder);
-    assert(thisV.isReference);
+    assert(!thisV.isReference);
 
   auto rd = expr->getField()->getParent();
   auto &layout = Glob.CGM.getTypes().getCGRecordLayout(rd);
@@ -2921,8 +2937,15 @@ ValueWithOffsets MLIRScanner::VisitCastExpr(CastExpr *E) {
   }
   case clang::CastKind::CK_IntegralCast: {
     auto scalar = Visit(E->getSubExpr()).getValue(builder);
-    auto prevTy = scalar.getType().cast<mlir::IntegerType>();
     auto postTy = getMLIRType(E->getType()).cast<mlir::IntegerType>();
+    if (scalar.getType().isa<mlir::LLVM::LLVMPointerType>()) {
+      return ValueWithOffsets(builder.create<mlir::LLVM::PtrToIntOp>(loc, postTy, scalar), /*isReference*/false);
+    }
+    if (!scalar.getType().isa<mlir::IntegerType>()) {
+      E->dump();
+      llvm::errs() << " scalar: " << scalar << "\n";
+    }
+    auto prevTy = scalar.getType().cast<mlir::IntegerType>();
     bool signedType = true;
     if (auto bit = dyn_cast<clang::BuiltinType>(&*E->getType())) {
       if (bit->isUnsignedInteger())
@@ -3497,28 +3520,38 @@ void MLIRASTConsumer::run() {
   }
 }
 
+void MLIRASTConsumer::HandleDeclContext(DeclContext* DC) {
+  
+  for (auto D : DC->decls()) {
+    if (auto NS = dyn_cast<clang::NamespaceDecl>(D)) {
+      HandleDeclContext(NS);
+      continue;
+    }
+    FunctionDecl *fd = dyn_cast<clang::FunctionDecl>(D);
+    if (!fd)
+      continue;
+    if (!fd->hasBody())
+      continue;
+    if (fd->getIdentifier() == nullptr)
+      continue;
+    if (emitIfFound.count(fd->getName().str())) {
+      functionsToEmit.push_back(fd);
+    } else {
+    }
+  }
+}
+
 bool MLIRASTConsumer::HandleTopLevelDecl(DeclGroupRef dg) {
   DeclGroupRef::iterator it;
 
   if (error)
     return true;
 
-  std::function<void(Decl *)> handle = [&](Decl *D) {
-    if (auto lsd = dyn_cast<clang::LinkageSpecDecl>(D)) {
-      for (auto e : lsd->decls())
-        handle(e);
-    }
-    if (FunctionDecl *fd = dyn_cast<clang::FunctionDecl>(D)) {
-      if (fd->getIdentifier()) {
-        globalFunctions[fd->getName().str()] = fd;
-      }
-    }
-  };
   for (it = dg.begin(); it != dg.end(); ++it) {
-    handle(*it);
-  }
-
-  for (it = dg.begin(); it != dg.end(); ++it) {
+    if (auto NS = dyn_cast<clang::NamespaceDecl>(*it)) {
+      HandleDeclContext(NS);
+      continue;
+    }
     FunctionDecl *fd = dyn_cast<clang::FunctionDecl>(*it);
     if (!fd)
       continue;
@@ -3528,6 +3561,7 @@ bool MLIRASTConsumer::HandleTopLevelDecl(DeclGroupRef dg) {
       continue;
     if (emitIfFound.count(fd->getName().str())) {
       functionsToEmit.push_back(fd);
+    } else {
     }
   }
 
@@ -3803,6 +3837,13 @@ static bool parseMLIR(const char *Argv0, std::vector<std::string> filenames,
     Argv.push_back("-fopenmp");
   if (Standard != "") {
     auto a = "-std=" + Standard;
+    char *chars = (char *)malloc(a.length() + 1);
+    memcpy(chars, a.data(), a.length());
+    chars[a.length()] = 0;
+    Argv.push_back(chars);
+  }
+  if (CUDAGPUArch != "") {
+    auto a = "--cuda-gpu-arch=" + CUDAGPUArch;
     char *chars = (char *)malloc(a.length() + 1);
     memcpy(chars, a.data(), a.length());
     chars[a.length()] = 0;

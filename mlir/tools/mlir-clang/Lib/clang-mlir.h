@@ -82,6 +82,7 @@ struct ValueWithOffsets {
       } else if (val.getType().isa<mlir::MemRefType>()) {
 
       } else {
+        val.getDefiningOp()->getParentOfType<FuncOp>().dump();
         llvm::errs() << val << "\n";
         assert(val.getType().isa<mlir::MemRefType>());
       }
@@ -313,7 +314,6 @@ struct MLIRASTConsumer : public ASTConsumer {
                                           mlir::OpBuilder &builder,
                                           StringRef value);
 
-  std::map<std::string, clang::FunctionDecl *> globalFunctions;
   std::pair<mlir::memref::GlobalOp, bool> GetOrCreateGlobal(const ValueDecl *VD);
 
   std::deque<const FunctionDecl *> functionsToEmit;
@@ -321,6 +321,8 @@ struct MLIRASTConsumer : public ASTConsumer {
   void run();
 
   virtual bool HandleTopLevelDecl(DeclGroupRef dg);
+
+  void HandleDeclContext(DeclContext* DC);
 
   mlir::Type getMLIRType(clang::QualType t);
 
@@ -446,7 +448,7 @@ public:
       //  auto mt = t.cast<MemRefType>();
       //  val = builder.create<memref::SubIndexOp>(loc, mt, val, getConstantIndex(-1));
       //}
-      setValue("this", ValueWithOffsets(val, /*isReference*/ true));
+      setValue("this", ValueWithOffsets(val, /*isReference*/ false));
       i++;
     }
 
@@ -478,7 +480,7 @@ public:
       for(auto expr : CC->inits()) {
         assert(thisV.val);
         mlir::Value toset = Visit(expr->getInit()).getValue(builder);
-        assert(thisV.isReference);
+        assert(!thisV.isReference);
 
         auto rd = expr->getMember()->getParent();
         auto &layout = Glob.CGM.getTypes().getCGRecordLayout(rd);
@@ -599,6 +601,8 @@ public:
   ValueWithOffsets VisitCXXThisExpr(clang::CXXThisExpr *expr);
 
   ValueWithOffsets VisitPredefinedExpr(clang::PredefinedExpr *expr);
+
+  ValueWithOffsets VisitLambdaExpr(clang::LambdaExpr *expr);
 };
 
 #endif

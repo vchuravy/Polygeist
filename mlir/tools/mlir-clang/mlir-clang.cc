@@ -35,6 +35,9 @@ static cl::opt<bool>
 static cl::opt<std::string> Standard("std", cl::init(""),
                                      cl::desc("C/C++ std"));
 
+static cl::opt<std::string> CUDAGPUArch("cuda-gpu-arch", cl::init(""),
+                                     cl::desc("CUDA GPU arch"));
+
 static cl::opt<std::string> Output("o", cl::init("-"), cl::desc("Output file"));
 
 static cl::list<std::string> inputFileName(cl::Positional, cl::OneOrMore,
