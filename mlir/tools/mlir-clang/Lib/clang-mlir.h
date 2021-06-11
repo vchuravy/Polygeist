@@ -603,6 +603,9 @@ public:
   ValueWithOffsets VisitPredefinedExpr(clang::PredefinedExpr *expr);
 
   ValueWithOffsets VisitLambdaExpr(clang::LambdaExpr *expr);
+
+  ValueWithOffsets VisitCXXBindTemporaryExpr(clang::CXXBindTemporaryExpr *expr);
+  
 };
 
 #endif

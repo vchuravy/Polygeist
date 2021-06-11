@@ -286,9 +286,7 @@ ValueWithOffsets MLIRScanner::VisitVarDecl(clang::VarDecl *decl) {
       }
 
     } else {
-      assert(inite.getType() == op.getType().cast<MemRefType>().getElementType());
-      assert(op.getType().cast<MemRefType>().getShape().size() == 1);
-      builder.create<mlir::memref::StoreOp>(loc, inite, op, zeroIndex);
+      ValueWithOffsets(op, /*isReference*/true).store(builder, inite);
     }
   } else if (auto init = decl->getInit()) {
     if (auto il = dyn_cast<InitListExpr>(init)) {
@@ -326,6 +324,11 @@ ValueWithOffsets MLIRScanner::VisitCXXThisExpr(clang::CXXThisExpr *expr) {
 
 ValueWithOffsets MLIRScanner::VisitPredefinedExpr(clang::PredefinedExpr *expr) {
   return VisitStringLiteral(expr->getFunctionName());
+}
+
+
+ValueWithOffsets MLIRScanner::VisitCXXBindTemporaryExpr(clang::CXXBindTemporaryExpr *expr) {
+  return Visit(expr->getSubExpr());
 }
 
 ValueWithOffsets MLIRScanner::VisitLambdaExpr(clang::LambdaExpr *expr) {
@@ -1598,7 +1601,7 @@ ValueWithOffsets MLIRScanner::VisitCallExpr(clang::CallExpr *expr) {
   size_t i = 0;
   if (auto CC = dyn_cast<CXXMemberCallExpr>(expr)) {
     auto arg = Visit(CC->getImplicitObjectArgument());
-    if (!arg.val || true) {
+    if (!arg.val) {
       function.dump();
       llvm::errs() << " av: " << arg.val << "\n";
       expr->dump();
@@ -1703,7 +1706,7 @@ ValueWithOffsets MLIRScanner::VisitCallExpr(clang::CallExpr *expr) {
   auto LLTy = getLLVMType(expr->getType());
 
   bool isArrayReturn = isa<clang::ArrayType>(expr->getType());
-  if (!LLTy->isVoidTy() && !Glob.getMLIRType(llvm::PointerType::getUnqual(LLTy)).isa<mlir::LLVM::LLVMPointerType>() && isa<llvm::StructType>(LLTy)) {
+  if (!expr->isLValue() && !LLTy->isVoidTy() && !Glob.getMLIRType(llvm::PointerType::getUnqual(LLTy)).isa<mlir::LLVM::LLVMPointerType>() && isa<llvm::StructType>(LLTy)) {
     isArrayReturn = true;
   }
 
@@ -1754,6 +1757,8 @@ ValueWithOffsets MLIRScanner::VisitCallExpr(clang::CallExpr *expr) {
   auto op = builder.create<mlir::CallOp>(loc, tocall, args);
   if (isArrayReturn) {
     // TODO remedy return
+    if (expr->isLValue())
+      expr->dump();
     assert(!expr->isLValue());
     return ValueWithOffsets(alloc, /*isReference*/ true);
   } else if (op->getNumResults()) {
@@ -2413,7 +2418,7 @@ ValueWithOffsets MLIRScanner::VisitBinaryOperator(clang::BinaryOperator *BO) {
         }
       }
     }
-    if (tostore.getType() != subType || lhs.val.getType().cast<MemRefType>().getShape().size() != 1) {
+    if (tostore.getType() != subType || (lhs.val.getType().isa<MemRefType>() && lhs.val.getType().cast<MemRefType>().getShape().size() != 1)) {
       BO->dump();
       function.dump();
       llvm::errs() << " lhs.val: " << lhs.val << "\n";
@@ -2581,7 +2586,6 @@ ValueWithOffsets MLIRScanner::VisitDeclRefExpr(DeclRefExpr *E) {
     }
   }
 
-  E->getDecl()->dump();
   if (auto PD = dyn_cast<ParmVarDecl>(E->getDecl())) {
     return params[PD->getFunctionScopeIndex()];
   }
@@ -2848,7 +2852,9 @@ ValueWithOffsets MLIRScanner::VisitCastExpr(CastExpr *E) {
     auto ut = scalar.getType().cast<mlir::MemRefType>();
     auto mlirty = getMLIRType(E->getType());
     
-    if (!mlirty.isa<mlir::MemRefType>()) {
+    if (auto PT = mlirty.dyn_cast<mlir::LLVM::LLVMPointerType>()) {
+      mlirty = mlir::MemRefType::get(-1, PT.getElementType());
+    } else if (!mlirty.isa<mlir::MemRefType>()) {
       E->dump();
       E->getType()->dump();
       llvm::errs() << " scalar: " << scalar << " mlirty: " << mlirty << "\n";
