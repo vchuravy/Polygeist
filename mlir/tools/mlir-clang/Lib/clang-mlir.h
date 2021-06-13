@@ -40,14 +40,14 @@ private:
   mlir::Value lowerBound;
   int64_t step;
   mlir::Type indVarType;
-  std::string indVar;
+  VarDecl* indVar;
   bool forwardMode;
 
 public:
   AffineLoopDescriptor()
       : upperBound(nullptr), lowerBound(nullptr),
         step(std::numeric_limits<int64_t>::max()), indVarType(nullptr),
-        indVar("nullptr"), forwardMode(true){};
+        indVar(nullptr), forwardMode(true){};
   AffineLoopDescriptor(const AffineLoopDescriptor &) = delete;
 
   void setLowerBound(mlir::Value value) { lowerBound = value; }
@@ -55,9 +55,9 @@ public:
 
   void setStep(int value) { step = value; };
   void setType(mlir::Type type) { indVarType = type; }
-  void setName(std::string value) { indVar = value; }
+  void setName(VarDecl *value) { indVar = value; }
 
-  std::string getName() const { return indVar; }
+  VarDecl* getName() const { return indVar; }
   mlir::Type getType() const { return indVarType; }
   int getStep() const { return step; }
 
@@ -111,11 +111,17 @@ struct ValueWithOffsets {
     assert(val);
     auto loc = builder.getUnknownLoc();
     if (auto PT = val.getType().dyn_cast<mlir::LLVM::LLVMPointerType>()) {
+      if (toStore.getType() != PT.getElementType()) {
+        llvm::errs() << " toStore: " << toStore << " PT: " << PT << " val: " << val << "\n";
+      }
       assert(toStore.getType() == PT.getElementType());
       builder.create<mlir::LLVM::StoreOp>(
           loc, toStore, val);
     } else {
       assert(val.getType().cast<MemRefType>().getShape().size() == 1);
+      if (toStore.getType() != val.getType().cast<MemRefType>().getElementType()) {
+        llvm::errs() << " toStore: " << toStore << " PT: " << val.getType().cast<MemRefType>() << " val: " << val << "\n";
+      }
       assert(toStore.getType() ==
             val.getType().cast<MemRefType>().getElementType());
       auto c0 = builder.create<mlir::ConstantIndexOp>(loc, 0);
@@ -137,6 +143,8 @@ struct ValueWithOffsets {
     }
 
     auto c0 = builder.create<mlir::ConstantIndexOp>(loc, 0);
+    if (!val.getType().isa<mlir::MemRefType>())
+      llvm::errs() << val << "\n";
     auto mt = val.getType().cast<mlir::MemRefType>();
     auto shape = std::vector<int64_t>(mt.getShape());
 
@@ -341,10 +349,7 @@ private:
   mlir::OpBuilder builder;
   mlir::Location loc;
   mlir::Block *entryBlock;
-  std::vector<std::map<std::string, ValueWithOffsets>> scopes;
   std::vector<LoopContext> loops;
-
-  void setValue(std::string name, ValueWithOffsets &&val);
 
   //ValueWithOffsets getValue(std::string name);
 
@@ -366,8 +371,6 @@ private:
     return rs;
   }
 
-  mlir::Type getLLVMTypeFromMLIRType(mlir::Type t);
-
   mlir::Location getMLIRLocation(clang::SourceLocation loc);
 
   mlir::Type getMLIRType(clang::QualType t);
@@ -376,11 +379,8 @@ private:
 
   size_t getTypeSize(clang::QualType t);
 
-  mlir::Value createAllocOp(mlir::Type t, std::string name, uint64_t memspace,
+  mlir::Value createAllocOp(mlir::Type t, VarDecl* name, uint64_t memspace,
                             bool isArray, bool LLVMABI);
-
-  mlir::Value createAndSetAllocOp(std::string name, mlir::Value v,
-                                  uint64_t memspace);
 
   const clang::FunctionDecl *EmitCallee(const Expr *E);
 
@@ -414,88 +414,98 @@ public:
 
 public:
   const FunctionDecl *EmittingFunctionDecl;
-  std::vector<ValueWithOffsets> params;
+  std::map<const VarDecl*, ValueWithOffsets> params;
+  llvm::DenseMap< const VarDecl *, FieldDecl * > Captures;
+  FieldDecl *ThisCapture;
+  std::vector<mlir::Value> arrayinit;
+  ValueWithOffsets ThisVal;
   MLIRScanner(MLIRASTConsumer &Glob, mlir::FuncOp function,
               const FunctionDecl *fd, mlir::ModuleOp &module)
       : Glob(Glob), function(function), module(module),
-        builder(module.getContext()), loc(builder.getUnknownLoc()), EmittingFunctionDecl(fd) {
+        builder(module.getContext()), loc(builder.getUnknownLoc()), EmittingFunctionDecl(fd), ThisCapture(nullptr) {
     
     if (ShowAST) {
       llvm::errs() << "Emitting fn: " << function.getName() << "\n";
       llvm::errs() << *fd << "\n";
     }
 
-    scopes.emplace_back();
-
     entryBlock = function.addEntryBlock();
 
     builder.setInsertionPointToStart(entryBlock);
 
     unsigned i = 0;
-    if (isa<CXXMethodDecl>(fd)) {
-      /*
-      bool isArray = isa<clang::ArrayType>(CC->getThisType());
-      auto LLTy = cast<llvm::PointerType>(getLLVMType(CC->getThisType()))->getElementType();
-      bool LLVMABI = false;
-      if (Glob.getMLIRType(LLTy).isa<mlir::LLVM::LLVMPointerType>())
-        LLVMABI = true;
-      else if (isa<llvm::StructType>(LLTy)) {
-        isArray = true;
+    if (auto CM = dyn_cast<CXXMethodDecl>(fd)) {
+
+      if (CM->getParent()->isLambda()) {
+        CM->getParent()->getCaptureFields(Captures, ThisCapture);
+        if (ThisCapture) {
+          llvm::errs() << " thiscapture:\n";
+          ThisCapture->dump();
+        }
       }
-      */
-      mlir::Value val = function.getArgument(i);
-      //if (isArray) {
-      //  auto mt = t.cast<MemRefType>();
-      //  val = builder.create<memref::SubIndexOp>(loc, mt, val, getConstantIndex(-1));
-      //}
-      setValue("this", ValueWithOffsets(val, /*isReference*/ false));
-      i++;
+
+      if (CM->isInstance()) {
+        mlir::Value val = function.getArgument(i);
+        ThisVal = ValueWithOffsets(val, /*isReference*/ false);
+        i++;
+      }
     }
 
     for (auto parm : fd->parameters()) {
       assert(i != function.getNumArguments());
-      auto name = parm->getName().str();
       // function.getArgument(i).setName(name);
-
       bool isArray = false;
       auto LLTy = getLLVMType(parm->getType());
-      if (!Glob.getMLIRType(llvm::PointerType::getUnqual(LLTy)).isa<mlir::LLVM::LLVMPointerType>() && isa<llvm::StructType>(LLTy)) {
+      while (auto ST = dyn_cast<llvm::StructType>(LLTy)) {
+        if (ST->getNumElements() == 1) LLTy = ST->getTypeAtIndex(0U);
+        else break;
+      }
+      bool LLVMABI = false;
+
+      if (Glob.getMLIRType(Glob.CGM.getContext().getPointerType(parm->getType())).isa<mlir::LLVM::LLVMPointerType>())
+        LLVMABI = true;
+      else if (isa<llvm::StructType>(LLTy)) {
         isArray = true;
       } else if (isa<clang::RValueReferenceType>(parm->getType()) || isa<clang::LValueReferenceType>(parm->getType()))
         isArray = true;
       mlir::Value val = function.getArgument(i);
+      assert(val);
       if (isArray) {
-        params.emplace_back(val, /*isReference*/ true);
-      } else
-        params.emplace_back(createAndSetAllocOp(name, val, 0), /*isReference*/true);
+        params.emplace(parm, ValueWithOffsets(val, /*isReference*/ true));
+      } else {
+        auto alloc = createAllocOp(val.getType(), parm, /*memspace*/0, isArray, /*LLVMABI*/LLVMABI);
+        ValueWithOffsets(alloc, /*isReference*/true).store(builder, val);
+      }
       i++;
     }
-    scopes.emplace_back();
 
     if (auto CC = dyn_cast<CXXConstructorDecl>(fd)) {
-      auto found = scopes[0].find("this");
-      assert (found != scopes[0].end());
-      ValueWithOffsets thisV = found->second;
 
       for(auto expr : CC->inits()) {
-        assert(thisV.val);
-        mlir::Value toset = Visit(expr->getInit()).getValue(builder);
-        assert(!thisV.isReference);
+        assert(ThisVal.val);
+        auto initexpr = Visit(expr->getInit());
+        if (isa<ArrayInitLoopExpr>(expr->getInit())) continue;
+        if (!initexpr.val) {
+          expr->getInit()->dump();
+        }
+        mlir::Value toset = initexpr.getValue(builder);
+        assert(!ThisVal.isReference);
 
         auto rd = expr->getMember()->getParent();
         auto &layout = Glob.CGM.getTypes().getCGRecordLayout(rd);
 
         FieldDecl *field = expr->getMember();
-        if (auto PT = thisV.val.getType().dyn_cast<mlir::LLVM::LLVMPointerType>()) {
+        if (auto PT = ThisVal.val.getType().dyn_cast<mlir::LLVM::LLVMPointerType>()) {
           auto iTy = builder.getIntegerType(32);
-          mlir::Value vec[3] = {thisV.val, builder.create<mlir::ConstantOp>(
+          mlir::Value vec[3] = {ThisVal.val, builder.create<mlir::ConstantOp>(
             loc, iTy, builder.getIntegerAttr(iTy, 0)), builder.create<mlir::ConstantOp>(
             loc, iTy, builder.getIntegerAttr(iTy, layout.getLLVMFieldNo(field)))};
           builder.create<mlir::LLVM::StoreOp>(loc, toset, builder.create<mlir::LLVM::GEPOp>(loc, mlir::LLVM::LLVMPointerType::get(getMLIRType(expr->getInit()->getType()), PT.getAddressSpace()), vec));
+        } else {
+          mlir::Value offs[2] = {getConstantIndex(0), getConstantIndex(layout.getLLVMFieldNo(field))};
+          assert(ThisVal.val.getType().isa<MemRefType>());
+          builder.create<mlir::memref::StoreOp>(loc, toset, ThisVal.val, offs);
         }
-
-        mlir::Value offs[2] = {getConstantIndex(0), getConstantIndex(layout.getLLVMFieldNo(field))};
-        builder.create<mlir::memref::StoreOp>(loc, toset, thisV.val, offs);
       }
     }
 
@@ -549,7 +559,7 @@ public:
   ValueWithOffsets VisitCallExpr(clang::CallExpr *expr);
 
   ValueWithOffsets VisitCXXConstructExpr(clang::CXXConstructExpr *expr);
-  ValueWithOffsets VisitConstructCommon(clang::CXXConstructExpr *expr, StringRef name, unsigned space);
+  ValueWithOffsets VisitConstructCommon(clang::CXXConstructExpr *expr, VarDecl *name, unsigned space);
 
   ValueWithOffsets VisitMSPropertyRefExpr(MSPropertyRefExpr *expr);
 
@@ -605,7 +615,16 @@ public:
   ValueWithOffsets VisitLambdaExpr(clang::LambdaExpr *expr);
 
   ValueWithOffsets VisitCXXBindTemporaryExpr(clang::CXXBindTemporaryExpr *expr);
+
+  ValueWithOffsets VisitCXXFunctionalCastExpr(clang::CXXFunctionalCastExpr *expr);
+
+  ValueWithOffsets VisitInitListExpr(clang::InitListExpr *expr);
+
+  ValueWithOffsets VisitArrayInitLoopExpr(clang::ArrayInitLoopExpr *expr);
+
+  ValueWithOffsets VisitArrayInitIndexExpr(clang::ArrayInitIndexExpr *expr);
   
+  ValueWithOffsets CommonFieldLookup(const FieldDecl* FD, mlir::Value val);
 };
 
 #endif
