@@ -36,7 +36,7 @@ long fn(long a, long b) {
 // CHECK-NEXT:   }
 //
 // CHECK:   func private @_ZZ2fnllEN3$_0C1EOS_(%arg0: memref<?x2xi64>, %arg1: memref<?x2xi64>) {
-// CHECK-NEXT:     %0 = affine.load %arg1[0, 1] : memref<?x2xi64>
+// CHECK-NEXT:     %0 = affine.load %arg1[0, 0] : memref<?x2xi64>
 // CHECK-NEXT:     affine.store %0, %arg0[0, 0] : memref<?x2xi64>
 // CHECK-NEXT:     %1 = affine.load %arg1[0, 1] : memref<?x2xi64>
 // CHECK-NEXT:     affine.store %1, %arg0[0, 1] : memref<?x2xi64>

@@ -312,12 +312,6 @@ ValueWithOffsets MLIRScanner::VisitPredefinedExpr(clang::PredefinedExpr *expr) {
 }
 
 ValueWithOffsets MLIRScanner::VisitInitListExpr(clang::InitListExpr *expr) {
-  expr->dump();
-  expr->getType()->dump();
-  llvm::errs() << *getLLVMType(expr->getType()) << "\n";
-  auto mt = getMLIRType(expr->getType());
-  llvm::errs() << mt << "\n";
-
   mlir::Type subType = getMLIRType(expr->getType());
   bool isArray = isa<clang::ArrayType>(expr->getType());
   auto LLTy = getLLVMType(expr->getType());
@@ -344,15 +338,6 @@ ValueWithOffsets MLIRScanner::VisitArrayInitIndexExpr(clang::ArrayInitIndexExpr 
 }
 
 ValueWithOffsets MLIRScanner::VisitArrayInitLoopExpr(clang::ArrayInitLoopExpr *expr) {
-  EmittingFunctionDecl->dump();
-  expr->dump();
-  expr->getType()->dump();
-  expr->getCommonExpr()->dump();
-  expr->getSubExpr()->dump();
-  llvm::errs() << *getLLVMType(expr->getType()) << "\n";
-  auto mt = getMLIRType(expr->getType());
-  llvm::errs() << mt << "\n";
-
   auto CAT = dyn_cast<clang::ConstantArrayType>(expr->getType());
 
   std::vector<mlir::Value> start = {getConstantIndex(0)};
@@ -397,8 +382,6 @@ ValueWithOffsets MLIRScanner::VisitLambdaExpr(clang::LambdaExpr *expr) {
 
   expr->getLambdaClass()->getCaptureFields(Captures, ThisCapture);
 
-  expr->getCallOperator()->dump();
-
   bool LLVMABI = false;
   mlir::Type t = Glob.getMLIRType(expr->getCallOperator()->getThisType());
   
@@ -411,7 +394,7 @@ ValueWithOffsets MLIRScanner::VisitLambdaExpr(clang::LambdaExpr *expr) {
   if (auto PT = t.dyn_cast<mlir::LLVM::LLVMPointerType>()) {
     LLVMABI = true;
     t = PT.getElementType();
-  } else if (isa<llvm::StructType>(LLTy)) {
+  } else if (t.dyn_cast<MemRefType>() && isa<llvm::StructType>(LLTy)) {
     isArray = true;
   }
   if (auto mt = t.dyn_cast<MemRefType>()) {
@@ -428,12 +411,10 @@ ValueWithOffsets MLIRScanner::VisitLambdaExpr(clang::LambdaExpr *expr) {
         for (auto C : expr->getLambdaClass()->captures()) {
           if (C.capturesVariable()) {
             CaptureKinds[C.getCapturedVar()] = C.getCaptureKind();
-            C.getCapturedVar()->dump();
           }
         }
   for (auto pair: Captures) {
     assert(params.find(pair.first) != params.end());
-    pair.first->getType()->getUnqualifiedDesugaredType()->dump();
     assert(CaptureKinds.find(pair.first) != CaptureKinds.end());
     if (CaptureKinds[pair.first] == LambdaCaptureKind::LCK_ByCopy)
       CommonFieldLookup(pair.second, op).store(builder, params[pair.first].getValue(builder));
@@ -475,9 +456,6 @@ ValueWithOffsets MLIRScanner::VisitMaterializeTemporaryExpr(clang::MaterializeTe
 
   llvm::errs() << "cleanup of materialized not handled";
   auto op = createAllocOp(getMLIRType(expr->getSubExpr()->getType()), nullptr, 0, /*isArray*/false, /*LLVMABI*/LLVMABI);
-
-  expr->getType()->dump();
-  llvm::errs() << " llty: " << getLLVMType(expr->getType()) << " mlirty: " << getMLIRType(expr->getType()) << " op: " << op << " LLVMABI: " << (int)LLVMABI << "\n";
 
   ValueWithOffsets(op, /*isRefererence*/true).store(builder, v.getValue(builder));
   return ValueWithOffsets(op, /*isRefererence*/true);
@@ -947,7 +925,7 @@ MLIRScanner::VisitConstructCommon(clang::CXXConstructExpr *cons, VarDecl* name, 
   bool LLVMABI = false;
   if (Glob.getMLIRType(Glob.CGM.getContext().getPointerType(cons->getType())).isa<mlir::LLVM::LLVMPointerType>())
     LLVMABI = true;
-  else if (isa<llvm::StructType>(LLTy)) {
+  else if (Glob.getMLIRType(Glob.CGM.getContext().getPointerType(cons->getType())).isa<MemRefType>() && isa<llvm::StructType>(LLTy)) {
     subType = Glob.getMLIRType(Glob.CGM.getContext().getPointerType(cons->getType()));
     isArray = true;
   }
@@ -2749,13 +2727,19 @@ ValueWithOffsets MLIRScanner::CommonFieldLookup(const FieldDecl* FD, mlir::Value
     mlir::Value vec[3] = {val, builder.create<mlir::ConstantOp>(
       loc, iTy, builder.getIntegerAttr(iTy, 0)), builder.create<mlir::ConstantOp>(
       loc, iTy, builder.getIntegerAttr(iTy, layout.getLLVMFieldNo(FD)))};
-    if (!PT.getElementType().isa<mlir::LLVM::LLVMStructType>()) {
+    if (!PT.getElementType().isa<mlir::LLVM::LLVMStructType, mlir::LLVM::LLVMArrayType>()) {
+      llvm::errs() << function << "\n";
+      rd->dump();
       FD->dump();
       FD->getType()->dump();
       llvm::errs() << " val: " << val << " - pt: " << PT << " fn: " << layout.getLLVMFieldNo(FD) << "\n";
     }
-    auto ET = PT.getElementType().isa<mlir::LLVM::LLVMStructType>() ?
-             PT.getElementType().cast<mlir::LLVM::LLVMStructType>().getBody()[layout.getLLVMFieldNo(FD)] : PT.getElementType().cast<mlir::LLVM::LLVMArrayType>().getElementType(); 
+    mlir::Type ET;
+    if (auto ST = PT.getElementType().dyn_cast<mlir::LLVM::LLVMStructType>()) {
+        ET = ST.getBody()[layout.getLLVMFieldNo(FD)];
+    } else {
+        ET = PT.getElementType().cast<mlir::LLVM::LLVMArrayType>().getElementType();
+    }
     return ValueWithOffsets(builder.create<mlir::LLVM::GEPOp>(loc, mlir::LLVM::LLVMPointerType::get(ET, PT.getAddressSpace()), vec), /*isReference*/true);
   }
   auto mt = val.getType().cast<MemRefType>();
@@ -2897,14 +2881,11 @@ ValueWithOffsets MLIRScanner::VisitMemberExpr(MemberExpr *ME) {
     }
   }
   auto base = Visit(ME->getBase());
-  QualType ty = ME->getBase()->getType();
   if (ME->isArrow()) {
     if (!base.val) {
       ME->dump();
     }
     base = base.dereference(builder);
-    ty = cast<clang::PointerType>(ty.getDesugaredType(Glob.astContext))
-             ->getPointeeType();
   }
   if (!base.isReference) {
     EmittingFunctionDecl->dump();
@@ -2913,14 +2894,7 @@ ValueWithOffsets MLIRScanner::VisitMemberExpr(MemberExpr *ME) {
     llvm::errs() << base.val << "\n";
   }
   assert(base.isReference);
-  auto ds = ty.getDesugaredType(Glob.astContext);
-  auto rd = cast<RecordType>(ds)->getDecl();
-  const FieldDecl *field = nullptr;
-  for (auto f : rd->fields()) {
-    if (f->getName() == memberName) {
-      field = f;
-    }
-  }
+  const FieldDecl *field = cast<FieldDecl>(ME->getMemberDecl());
   return CommonFieldLookup(field, base.val);
 }
 
@@ -3690,7 +3664,7 @@ mlir::FuncOp MLIRASTConsumer::GetOrCreateMLIRFunction(const FunctionDecl *FD) {
           if (ST->getNumElements() == 1) LLTy = ST->getTypeAtIndex(0U);
           else break;
         }
-        if (!getMLIRType(CGM.getContext().getPointerType(parm->getType())).isa<mlir::LLVM::LLVMPointerType>() && isa<llvm::StructType>(LLTy)) {
+        if (getMLIRType(CGM.getContext().getPointerType(parm->getType())).isa<mlir::MemRefType>() && isa<llvm::StructType>(LLTy)) {
           ArrayStruct = true;
         }
         if (ArrayStruct) {
@@ -3871,6 +3845,7 @@ mlir::Type MLIRASTConsumer::getMLIRType(clang::QualType qt) {
   if (auto RT = dyn_cast<clang::RecordType>(qt)) {
     llvm::Type *T = CGM.getTypes().ConvertType(qt);
     auto mlirty = getMLIRType(T);
+
     if (mlirty.isa<LLVM::LLVMPointerType, LLVM::LLVMArrayType, LLVM::LLVMFunctionType, LLVM::LLVMStructType>())
       return mlirty;
     if (auto ST = dyn_cast<llvm::StructType>(T)) {
@@ -3929,14 +3904,6 @@ mlir::Type MLIRASTConsumer::getMLIRType(clang::QualType qt) {
       OpBuilder builder(module);
       return MemRefType::get(-1, builder.getIntegerType(1), {});
     }
-
-    llvm::Type *T = CGM.getTypes().ConvertType(QualType(t, 0));
-    //llvm::errs() << " PT: "; PT->dump();
-    //llvm::errs() << " PTT: "; PTT->dump();
-    auto mlirty = getMLIRType(T);
-    //llvm::errs() << " sub T: " << *T << " mlirty: " << mlirty << "\n";
-    if (mlirty.isa<LLVM::LLVMPointerType, LLVM::LLVMStructType>())
-      return mlirty;
       
     if (auto AT = dyn_cast<clang::ArrayType>(PTT)) {
       auto subType = getMLIRType(QualType(AT, 0));
@@ -4008,10 +3975,14 @@ mlir::Type MLIRASTConsumer::getMLIRType(llvm::Type *t) {
       if (recursive) {
         return typeTranslator.translateType(t);
       }
-      if (!notAllSame)
+      if (!notAllSame) {
+        auto subT = getMLIRType(ST->getTypeAtIndex(0U));
+        if (subT.isa<LLVM::LLVMArrayType, LLVM::LLVMStructType, LLVM::LLVMPointerType>())
+            return LLVM::LLVMPointerType::get(subT);
         return mlir::MemRefType::get({-1, ST->getNumElements()},
-                                      getMLIRType(ST->getTypeAtIndex(0U)), {},
+                                      subT, {},
                                       pt->getAddressSpace());
+      }
     }
     if (auto AT = dyn_cast<llvm::ArrayType>(pt->getElementType())) {
       auto under = getMLIRType(AT);

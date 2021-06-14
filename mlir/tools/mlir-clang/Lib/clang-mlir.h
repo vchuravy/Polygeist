@@ -440,7 +440,6 @@ public:
         for (auto C : CM->getParent()->captures()) {
           if (C.capturesVariable()) {
             CaptureKinds[C.getCapturedVar()] = C.getCaptureKind();
-            C.getCapturedVar()->dump();
           }
         }
         CM->getParent()->getCaptureFields(Captures, ThisCapture);
@@ -470,7 +469,8 @@ public:
 
       if (Glob.getMLIRType(Glob.CGM.getContext().getPointerType(parm->getType())).isa<mlir::LLVM::LLVMPointerType>())
         LLVMABI = true;
-      else if (isa<llvm::StructType>(LLTy)) {
+      
+      if (!LLVMABI && isa<llvm::StructType>(LLTy)) {
         isArray = true;
       } else if (isa<clang::RValueReferenceType>(parm->getType()) || isa<clang::LValueReferenceType>(parm->getType()))
         isArray = true;
@@ -488,6 +488,10 @@ public:
     if (auto CC = dyn_cast<CXXConstructorDecl>(fd)) {
 
       for(auto expr : CC->inits()) {
+        if (ShowAST) {
+            expr->getMember()->dump();
+            expr->getInit()->dump();
+        }
         assert(ThisVal.val);
         auto initexpr = Visit(expr->getInit());
         if (isa<ArrayInitLoopExpr>(expr->getInit())) continue;
@@ -497,21 +501,8 @@ public:
         mlir::Value toset = initexpr.getValue(builder);
         assert(!ThisVal.isReference);
 
-        auto rd = expr->getMember()->getParent();
-        auto &layout = Glob.CGM.getTypes().getCGRecordLayout(rd);
-
         FieldDecl *field = expr->getMember();
-        if (auto PT = ThisVal.val.getType().dyn_cast<mlir::LLVM::LLVMPointerType>()) {
-          auto iTy = builder.getIntegerType(32);
-          mlir::Value vec[3] = {ThisVal.val, builder.create<mlir::ConstantOp>(
-            loc, iTy, builder.getIntegerAttr(iTy, 0)), builder.create<mlir::ConstantOp>(
-            loc, iTy, builder.getIntegerAttr(iTy, layout.getLLVMFieldNo(field)))};
-          builder.create<mlir::LLVM::StoreOp>(loc, toset, builder.create<mlir::LLVM::GEPOp>(loc, mlir::LLVM::LLVMPointerType::get(getMLIRType(expr->getInit()->getType()), PT.getAddressSpace()), vec));
-        } else {
-          mlir::Value offs[2] = {getConstantIndex(0), getConstantIndex(layout.getLLVMFieldNo(field))};
-          assert(ThisVal.val.getType().isa<MemRefType>());
-          builder.create<mlir::memref::StoreOp>(loc, toset, ThisVal.val, offs);
-        }
+        CommonFieldLookup(field, ThisVal.val).store(builder, toset);
       }
     }
 

@@ -37,22 +37,23 @@ long fn(int a, long b) {
 // CHECK-NEXT:    return %1 : i64
 // CHECK-NEXT:  }
 // CHECK-NEXT:  func private @_ZZ2fnilEN3$_0C1EOS_(%arg0: !llvm.ptr<struct<(i32, memref<4xi8>, i64)>>, %arg1: !llvm.ptr<struct<(i32, memref<4xi8>, i64)>>) {
-// CHECK-NEXT:    %c0_i32 = constant 0 : i32
-// CHECK-NEXT:    %c2_i32 = constant 2 : i32
-// CHECK-NEXT:    %0 = llvm.getelementptr %arg1[%c0_i32, %c2_i32] : (!llvm.ptr<struct<(i32, memref<4xi8>, i64)>>, i32, i32) -> !llvm.ptr<i64>
-// CHECK-NEXT:    %1 = llvm.load %0 : !llvm.ptr<i64>
-// CHECK-NEXT:    %2 = llvm.getelementptr %arg0[%c0_i32, %c0_i32] : (!llvm.ptr<struct<(i32, memref<4xi8>, i64)>>, i32, i32) -> !llvm.ptr<i32>
-// CHECK-NEXT:    llvm.store %1, %2 : !llvm.ptr<i32>
-// CHECK-NEXT:    %3 = llvm.load %0 : !llvm.ptr<i64>
-// CHECK-NEXT:    %4 = llvm.getelementptr %arg0[%c0_i32, %c2_i32] : (!llvm.ptr<struct<(i32, memref<4xi8>, i64)>>, i32, i32) -> !llvm.ptr<i64>
-// CHECK-NEXT:    llvm.store %3, %4 : !llvm.ptr<i64>
+// CHECK-NEXT:     %c0_i32 = constant 0 : i32
+// CHECK-NEXT:     %c2_i32 = constant 2 : i32
+// CHECK-NEXT:     %0 = llvm.getelementptr %arg1[%c0_i32, %c0_i32] : (!llvm.ptr<struct<(i32, memref<4xi8>, i64)>>, i32, i32) -> !llvm.ptr<i32>
+// CHECK-NEXT:     %1 = llvm.load %0 : !llvm.ptr<i32>
+// CHECK-NEXT:     %2 = llvm.getelementptr %arg0[%c0_i32, %c0_i32] : (!llvm.ptr<struct<(i32, memref<4xi8>, i64)>>, i32, i32) -> !llvm.ptr<i32>
+// CHECK-NEXT:     llvm.store %1, %2 : !llvm.ptr<i32>
+// CHECK-NEXT:     %3 = llvm.getelementptr %arg1[%c0_i32, %c2_i32] : (!llvm.ptr<struct<(i32, memref<4xi8>, i64)>>, i32, i32) -> !llvm.ptr<i64>
+// CHECK-NEXT:     %4 = llvm.load %3 : !llvm.ptr<i64>
+// CHECK-NEXT:     %5 = llvm.getelementptr %arg0[%c0_i32, %c2_i32] : (!llvm.ptr<struct<(i32, memref<4xi8>, i64)>>, i32, i32) -> !llvm.ptr<i64>
+// CHECK-NEXT:     llvm.store %4, %5 : !llvm.ptr<i64>
 // CHECK-NEXT:    return
 // CHECK-NEXT:  }
 // CHECK-NEXT:  func private @_ZZ2fnilENK3$_0clEv(%arg0: !llvm.ptr<struct<(i32, memref<4xi8>, i64)>>) -> i64 {
 // CHECK-NEXT:    %c0_i32 = constant 0 : i32
 // CHECK-NEXT:    %c2_i32 = constant 2 : i32
-// CHECK-NEXT:    %0 = llvm.getelementptr %arg0[%c0_i32, %c0_i32] : (!llvm.ptr<struct<(i32, memref<4xi8>, i64)>>, i32, i32) -> !llvm.ptr<i32>
-// CHECK-NEXT:    %1 = llvm.load %0 : !llvm.ptr<i32>
+// CHECK-NEXT:    %[[i0:.+]] = llvm.getelementptr %arg0[%c0_i32, %c0_i32] : (!llvm.ptr<struct<(i32, memref<4xi8>, i64)>>, i32, i32) -> !llvm.ptr<i32>
+// CHECK-NEXT:    %1 = llvm.load %[[i0]] : !llvm.ptr<i32>
 // CHECK-NEXT:    %2 = sexti %1 : i32 to i64
 // CHECK-NEXT:    %3 = llvm.getelementptr %arg0[%c0_i32, %c2_i32] : (!llvm.ptr<struct<(i32, memref<4xi8>, i64)>>, i32, i32) -> !llvm.ptr<i64>
 // CHECK-NEXT:    %4 = llvm.load %3 : !llvm.ptr<i64>
