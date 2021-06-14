@@ -416,6 +416,7 @@ public:
   const FunctionDecl *EmittingFunctionDecl;
   std::map<const VarDecl*, ValueWithOffsets> params;
   llvm::DenseMap< const VarDecl *, FieldDecl * > Captures;
+  llvm::DenseMap< const VarDecl *, LambdaCaptureKind > CaptureKinds;
   FieldDecl *ThisCapture;
   std::vector<mlir::Value> arrayinit;
   ValueWithOffsets ThisVal;
@@ -435,8 +436,13 @@ public:
 
     unsigned i = 0;
     if (auto CM = dyn_cast<CXXMethodDecl>(fd)) {
-
       if (CM->getParent()->isLambda()) {
+        for (auto C : CM->getParent()->captures()) {
+          if (C.capturesVariable()) {
+            CaptureKinds[C.getCapturedVar()] = C.getCaptureKind();
+            C.getCapturedVar()->dump();
+          }
+        }
         CM->getParent()->getCaptureFields(Captures, ThisCapture);
         if (ThisCapture) {
           llvm::errs() << " thiscapture:\n";

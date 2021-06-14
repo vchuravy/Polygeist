@@ -391,8 +391,6 @@ ValueWithOffsets MLIRScanner::VisitCXXBindTemporaryExpr(clang::CXXBindTemporaryE
 }
 
 ValueWithOffsets MLIRScanner::VisitLambdaExpr(clang::LambdaExpr *expr) {
-  EmittingFunctionDecl->dump();
-  expr->dump();
 
   llvm::DenseMap< const VarDecl *, FieldDecl * > Captures;
   FieldDecl *ThisCapture = nullptr;
@@ -425,14 +423,30 @@ ValueWithOffsets MLIRScanner::VisitLambdaExpr(clang::LambdaExpr *expr) {
   }
   auto op = createAllocOp(t, nullptr, /*memtype*/0, isArray, LLVMABI);
 
-  op.dump();
+  
+  llvm::DenseMap< const VarDecl *, LambdaCaptureKind > CaptureKinds;
+        for (auto C : expr->getLambdaClass()->captures()) {
+          if (C.capturesVariable()) {
+            CaptureKinds[C.getCapturedVar()] = C.getCaptureKind();
+            C.getCapturedVar()->dump();
+          }
+        }
   for (auto pair: Captures) {
     assert(params.find(pair.first) != params.end());
     pair.first->getType()->getUnqualifiedDesugaredType()->dump();
-    CommonFieldLookup(pair.second, op).store(builder, params[pair.first].getValue(builder));
+    assert(CaptureKinds.find(pair.first) != CaptureKinds.end());
+    if (CaptureKinds[pair.first] == LambdaCaptureKind::LCK_ByCopy)
+      CommonFieldLookup(pair.second, op).store(builder, params[pair.first].getValue(builder));
+    else {
+      assert(CaptureKinds[pair.first] == LambdaCaptureKind::LCK_ByRef);
+      assert(params[pair.first].isReference);
+      auto mt = params[pair.first].val.getType().cast<MemRefType>();
+      auto shape = std::vector<int64_t>(mt.getShape());
+      shape[0] = -1;
+
+      CommonFieldLookup(pair.second, op).store(builder, builder.create<memref::CastOp>(loc, MemRefType::get(shape, mt.getElementType(), mt.getAffineMaps(), mt.getMemorySpace()), params[pair.first].val));
+    }
   }
-  expr->getType()->dump();
-  llvm::errs() << " - " << getMLIRType(expr->getType()) << "\n";
   return ValueWithOffsets(op, /*isReference*/true);
 }
 
@@ -460,7 +474,10 @@ ValueWithOffsets MLIRScanner::VisitMaterializeTemporaryExpr(clang::MaterializeTe
   if (isArray) return v;
 
   llvm::errs() << "cleanup of materialized not handled";
-  auto op = createAllocOp(mlir::MemRefType::get(std::vector<int64_t>({1}), getMLIRType(expr->getSubExpr()->getType())), nullptr, 0, /*isArray*/true, /*LLVMABI*/LLVMABI);
+  auto op = createAllocOp(getMLIRType(expr->getSubExpr()->getType()), nullptr, 0, /*isArray*/false, /*LLVMABI*/LLVMABI);
+
+  expr->getType()->dump();
+  llvm::errs() << " llty: " << getLLVMType(expr->getType()) << " mlirty: " << getMLIRType(expr->getType()) << " op: " << op << " LLVMABI: " << (int)LLVMABI << "\n";
 
   ValueWithOffsets(op, /*isRefererence*/true).store(builder, v.getValue(builder));
   return ValueWithOffsets(op, /*isRefererence*/true);
@@ -2767,7 +2784,11 @@ ValueWithOffsets MLIRScanner::VisitDeclRefExpr(DeclRefExpr *E) {
   if (auto VD = dyn_cast<VarDecl>(E->getDecl())) {
     if (Captures.find(VD) != Captures.end()) {
       FieldDecl *field = Captures[VD];
-      return CommonFieldLookup(field, ThisVal.val);
+      auto res = CommonFieldLookup(field, ThisVal.val);
+      assert(CaptureKinds.find(VD) != CaptureKinds.end());
+      if (CaptureKinds[VD] == LambdaCaptureKind::LCK_ByRef)
+          res = res.dereference(builder);
+      return res;
     }
   }
 
@@ -3859,6 +3880,10 @@ mlir::Type MLIRASTConsumer::getMLIRType(clang::QualType qt) {
         return getMLIRType((*RT->getDecl()->field_begin())->getType());
       }
     }
+    if (RT->getDecl()->field_empty())
+        if (auto ST = dyn_cast<StructType>(T))
+            if (ST->getNumElements() == 1 && ST->getElementType(0U)->isIntegerTy(8))
+                return typeTranslator.translateType(llvm::StructType::get(T->getContext()));
     for (auto f : RT->getDecl()->fields()) {
       auto subType = getMLIRType(f->getType());
       if (subType.isa<LLVM::LLVMPointerType, LLVM::LLVMArrayType, LLVM::LLVMFunctionType, LLVM::LLVMStructType>()) {
@@ -3910,7 +3935,7 @@ mlir::Type MLIRASTConsumer::getMLIRType(clang::QualType qt) {
     //llvm::errs() << " PTT: "; PTT->dump();
     auto mlirty = getMLIRType(T);
     //llvm::errs() << " sub T: " << *T << " mlirty: " << mlirty << "\n";
-    if (mlirty.isa<LLVM::LLVMPointerType>())
+    if (mlirty.isa<LLVM::LLVMPointerType, LLVM::LLVMStructType>())
       return mlirty;
       
     if (auto AT = dyn_cast<clang::ArrayType>(PTT)) {
