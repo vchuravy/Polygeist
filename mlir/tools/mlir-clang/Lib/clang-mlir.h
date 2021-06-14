@@ -470,7 +470,7 @@ public:
       if (Glob.getMLIRType(Glob.CGM.getContext().getPointerType(parm->getType())).isa<mlir::LLVM::LLVMPointerType>())
         LLVMABI = true;
       
-      if (!LLVMABI && isa<llvm::StructType>(LLTy)) {
+      if (!LLVMABI && isa<llvm::StructType, llvm::ArrayType>(LLTy)) {
         isArray = true;
       } else if (isa<clang::RValueReferenceType>(parm->getType()) || isa<clang::LValueReferenceType>(parm->getType()))
         isArray = true;
@@ -493,15 +493,18 @@ public:
             expr->getInit()->dump();
         }
         assert(ThisVal.val);
+        FieldDecl *field = expr->getMember();
+        if (auto AILE = dyn_cast<ArrayInitLoopExpr>(expr->getInit())) {
+            VisitArrayInitLoop(AILE, CommonFieldLookup(field, ThisVal.val));
+            continue;
+        }
         auto initexpr = Visit(expr->getInit());
-        if (isa<ArrayInitLoopExpr>(expr->getInit())) continue;
         if (!initexpr.val) {
           expr->getInit()->dump();
         }
         mlir::Value toset = initexpr.getValue(builder);
         assert(!ThisVal.isReference);
 
-        FieldDecl *field = expr->getMember();
         CommonFieldLookup(field, ThisVal.val).store(builder, toset);
       }
     }
@@ -617,11 +620,12 @@ public:
 
   ValueWithOffsets VisitInitListExpr(clang::InitListExpr *expr);
 
-  ValueWithOffsets VisitArrayInitLoopExpr(clang::ArrayInitLoopExpr *expr);
+  ValueWithOffsets VisitArrayInitLoop(clang::ArrayInitLoopExpr *expr, ValueWithOffsets tostore);
 
   ValueWithOffsets VisitArrayInitIndexExpr(clang::ArrayInitIndexExpr *expr);
   
   ValueWithOffsets CommonFieldLookup(const FieldDecl* FD, mlir::Value val);
+  ValueWithOffsets CommonArrayLookup(ValueWithOffsets val, mlir::Value idx);
 };
 
 #endif
