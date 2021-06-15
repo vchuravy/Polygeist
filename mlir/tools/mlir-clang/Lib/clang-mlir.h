@@ -332,7 +332,7 @@ struct MLIRASTConsumer : public ASTConsumer {
 
   void HandleDeclContext(DeclContext* DC);
 
-  mlir::Type getMLIRType(clang::QualType t);
+  mlir::Type getMLIRType(clang::QualType t, bool allowMerge=true);
 
   llvm::Type *getLLVMType(clang::QualType t);
 
@@ -495,7 +495,7 @@ public:
         assert(ThisVal.val);
         FieldDecl *field = expr->getMember();
         if (auto AILE = dyn_cast<ArrayInitLoopExpr>(expr->getInit())) {
-            VisitArrayInitLoop(AILE, CommonFieldLookup(field, ThisVal.val));
+            VisitArrayInitLoop(AILE, CommonFieldLookup(CC->getThisObjectType(), field, ThisVal.val));
             continue;
         }
         auto initexpr = Visit(expr->getInit());
@@ -505,7 +505,7 @@ public:
         mlir::Value toset = initexpr.getValue(builder);
         assert(!ThisVal.isReference);
 
-        CommonFieldLookup(field, ThisVal.val).store(builder, toset);
+        CommonFieldLookup(CC->getThisObjectType(), field, ThisVal.val).store(builder, toset);
       }
     }
 
@@ -624,8 +624,9 @@ public:
 
   ValueWithOffsets VisitArrayInitIndexExpr(clang::ArrayInitIndexExpr *expr);
   
-  ValueWithOffsets CommonFieldLookup(const FieldDecl* FD, mlir::Value val);
+  ValueWithOffsets CommonFieldLookup(clang::QualType OT, const FieldDecl* FD, mlir::Value val);
   ValueWithOffsets CommonArrayLookup(ValueWithOffsets val, mlir::Value idx);
+  ValueWithOffsets CommonArrayToPointer(ValueWithOffsets val);
 };
 
 #endif
