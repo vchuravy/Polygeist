@@ -87,7 +87,7 @@ ValueWithOffsets MLIRScanner::VisitDeclStmt(clang::DeclStmt *decl) {
   for (auto sub : decl->decls()) {
     if (auto vd = dyn_cast<VarDecl>(sub)) {
       VisitVarDecl(vd);
-    } else if (isa<TypeAliasDecl>(sub)) {
+    } else if (isa<TypeAliasDecl, RecordDecl>(sub)) {
     } else {
       llvm::errs() << " + visiting unknonwn sub decl stmt\n";
       sub->dump();
@@ -333,11 +333,23 @@ ValueWithOffsets MLIRScanner::VisitArrayInitLoop(clang::ArrayInitLoopExpr *expr,
 
   arrayinit.push_back(affineOp.getInductionVar());
   
-  auto val = Visit(expr->getSubExpr());
-  assert(tostore.isReference);
-  bool isArray = false;
-  Glob.getMLIRType(expr->getSubExpr()->getType(), &isArray);
-  CommonArrayLookup(CommonArrayToPointer(tostore), affineOp.getInductionVar()).store(builder, val, isArray);
+  auto alu = CommonArrayLookup(CommonArrayToPointer(tostore), affineOp.getInductionVar());
+  
+  if (auto AILE = dyn_cast<ArrayInitLoopExpr>(expr->getSubExpr())) {
+    VisitArrayInitLoop(AILE, alu);
+  } else {
+      auto val = Visit(expr->getSubExpr());
+      if (!val.val) {
+        expr->dump();
+        expr->getSubExpr()->dump();
+      }
+      assert(val.val);
+      assert(tostore.isReference);
+      bool isArray = false;
+      Glob.getMLIRType(expr->getSubExpr()->getType(), &isArray);
+      alu.store(builder, val, isArray);
+  }
+
   arrayinit.pop_back();
 
   builder.setInsertionPoint(oldblock, oldpoint);
@@ -350,6 +362,8 @@ ValueWithOffsets MLIRScanner::VisitCXXFunctionalCastExpr(clang::CXXFunctionalCas
     return nullptr;
   }
   if (expr->getCastKind() == clang::CastKind::CK_NoOp)
+    return Visit(expr->getSubExpr());
+  if (expr->getCastKind() == clang::CastKind::CK_ConstructorConversion)
     return Visit(expr->getSubExpr());
   expr->dump();
   assert(0 && "unhandled functional cast type");
@@ -2775,7 +2789,7 @@ ValueWithOffsets MLIRScanner::CommonFieldLookup(clang::QualType CT, const FieldD
     mlir::Value vec[3] = {val, builder.create<mlir::ConstantOp>(
       loc, iTy, builder.getIntegerAttr(iTy, 0)), builder.create<mlir::ConstantOp>(
       loc, iTy, builder.getIntegerAttr(iTy, fnum))};
-    if (true || !PT.getElementType().isa<mlir::LLVM::LLVMStructType, mlir::LLVM::LLVMArrayType>()) {
+    if (!PT.getElementType().isa<mlir::LLVM::LLVMStructType, mlir::LLVM::LLVMArrayType>()) {
       llvm::errs() << function << "\n";
       //rd->dump();
       FD->dump();
@@ -3794,6 +3808,9 @@ mlir::Type MLIRASTConsumer::getMLIRType(clang::QualType qt, bool *implicitRef, b
   }
   if (auto ST = dyn_cast<clang::TypedefType>(qt)) {
     return getMLIRType(ST->desugar(), implicitRef, allowMerge);
+  }
+  if (auto DT = dyn_cast<clang::DecltypeType>(qt)) {
+    return getMLIRType(DT->desugar(), implicitRef, allowMerge);
   }
   
   if (auto DT = dyn_cast<clang::DecayedType>(qt)) {

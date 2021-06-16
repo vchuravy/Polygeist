@@ -107,6 +107,7 @@ struct ValueWithOffsets {
   }
 
   void store(OpBuilder &builder, ValueWithOffsets toStore, bool isArray) const {
+      assert(toStore.val);
       if (isArray) {
           if (!toStore.isReference) {
             llvm::errs() << " toStore.val: " << toStore.val << " isref " << toStore.isReference << " isar" << isArray << "\n";
