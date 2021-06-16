@@ -19,10 +19,10 @@ long fn(int a, long b) {
 // CHECK-NEXT:     %c1_i32 = constant 1 : i32
 // CHECK-NEXT:     %0 = llvm.alloca %c1_i64 x !llvm.struct<(i32, i64)> : (i64) -> !llvm.ptr<struct<(i32, i64)>>
 // CHECK-NEXT:     %1 = llvm.alloca %c1_i64 x !llvm.struct<(i32, i64)> : (i64) -> !llvm.ptr<struct<(i32, i64)>>
-// CHECK-NEXT:     %2 = llvm.getelementptr %1[%c0_i32, %c1_i32] : (!llvm.ptr<struct<(i32, i64)>>, i32, i32) -> !llvm.ptr<i64>
-// CHECK-NEXT:     llvm.store %arg1, %2 : !llvm.ptr<i64>
-// CHECK-NEXT:     %3 = llvm.getelementptr %1[%c0_i32, %c0_i32] : (!llvm.ptr<struct<(i32, i64)>>, i32, i32) -> !llvm.ptr<i32>
-// CHECK-NEXT:     llvm.store %arg0, %3 : !llvm.ptr<i32>
+// CHECK-NEXT:     %[[i2:.+]] = llvm.getelementptr %1[%c0_i32, %c0_i32] : (!llvm.ptr<struct<(i32, i64)>>, i32, i32) -> !llvm.ptr<i32>
+// CHECK-NEXT:     llvm.store %arg0, %[[i2]] : !llvm.ptr<i32>
+// CHECK-NEXT:     %[[i3:.+]] = llvm.getelementptr %1[%c0_i32, %c1_i32] : (!llvm.ptr<struct<(i32, i64)>>, i32, i32) -> !llvm.ptr<i64>
+// CHECK-NEXT:     llvm.store %arg1, %[[i3]] : !llvm.ptr<i64>
 // CHECK-NEXT:     call @_ZZ2fnilEN3$_0C1EOS_(%0, %1) : (!llvm.ptr<struct<(i32, i64)>>, !llvm.ptr<struct<(i32, i64)>>) -> ()
 // CHECK-NEXT:     %4 = llvm.load %0 : !llvm.ptr<struct<(i32, i64)>>
 // CHECK-NEXT:     %5 = call @_Z4callIZ2fnilE3$_0ElT_(%4) : (!llvm.struct<(i32, i64)>) -> i64

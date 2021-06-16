@@ -106,6 +106,58 @@ struct ValueWithOffsets {
                                           std::vector<mlir::Value>({c0}));
   }
 
+  void store(OpBuilder &builder, ValueWithOffsets toStore, bool isArray) const {
+      if (isArray) {
+          if (!toStore.isReference) {
+            llvm::errs() << " toStore.val: " << toStore.val << " isref " << toStore.isReference << " isar" << isArray << "\n";
+          }
+          assert(toStore.isReference);
+          auto smt = toStore.val.getType().cast<MemRefType>();
+          auto loc = builder.getUnknownLoc();
+          auto zeroIndex = builder.create<mlir::ConstantIndexOp>(loc, 0);
+          assert(smt.getShape().size() == 2);
+          
+          if (auto mt = val.getType().dyn_cast<MemRefType>()) {
+              assert(smt.getElementType() == mt.getElementType());
+              assert(mt.getShape().size() == 2);
+              assert(smt.getShape()[1] == mt.getShape()[1]);
+
+              for (ssize_t i = 0; i < smt.getShape()[1]; i++) {
+                mlir::Value idx[] = {zeroIndex, builder.create<mlir::ConstantIndexOp>(loc, i)};
+                builder.create<mlir::memref::StoreOp>(loc, 
+                  builder.create<mlir::memref::LoadOp>(loc, toStore.val, idx), val, idx);
+              }
+          } else {
+            llvm::errs() << " toStore.val: " << toStore.val << "\n";
+            llvm::errs() << "val: " << val << " isRef: " << isReference << "\n";
+            auto pt = val.getType().cast<LLVM::LLVMPointerType>();
+            llvm::errs() << "pt: " << pt << "\n";
+            mlir::Type elty;
+            if (auto at = pt.getElementType().dyn_cast<LLVM::LLVMArrayType>()) {
+                elty = at.getElementType();
+                assert(smt.getShape()[1] == at.getNumElements());
+            } else {
+                auto st = pt.getElementType().dyn_cast<LLVM::LLVMStructType>();
+                elty = st.getBody()[0];
+                assert(smt.getShape()[1] == st.getBody().size());
+            }
+            assert(elty == smt.getElementType());
+
+            auto iTy = builder.getIntegerType(32);
+            auto zero32 = builder.create<mlir::ConstantOp>(loc, iTy, builder.getIntegerAttr(iTy, 0));
+            for (ssize_t i = 0; i < smt.getShape()[1]; i++) {
+               mlir::Value idx[] = {zeroIndex, builder.create<mlir::ConstantIndexOp>(loc, i)};
+               mlir::Value lidx[] = {val, zero32, builder.create<mlir::ConstantOp>(loc, iTy, builder.getIntegerAttr(iTy, i))};
+               builder.create<mlir::LLVM::StoreOp>(loc, 
+                  builder.create<mlir::memref::LoadOp>(loc, toStore.val, idx), 
+                  builder.create<mlir::LLVM::GEPOp>(loc, elty, lidx));
+            }
+          }
+      } else {
+        store(builder, toStore.getValue(builder));
+      }
+  }
+
   void store(OpBuilder &builder, mlir::Value toStore) const {
     assert(isReference);
     assert(val);
@@ -332,7 +384,7 @@ struct MLIRASTConsumer : public ASTConsumer {
 
   void HandleDeclContext(DeclContext* DC);
 
-  mlir::Type getMLIRType(clang::QualType t, bool allowMerge=true);
+  mlir::Type getMLIRType(clang::QualType t, bool *implicitRef=nullptr, bool allowMerge=true);
 
   llvm::Type *getLLVMType(clang::QualType t);
 
@@ -373,9 +425,8 @@ private:
 
   mlir::Location getMLIRLocation(clang::SourceLocation loc);
 
-  mlir::Type getMLIRType(clang::QualType t);
-
   llvm::Type *getLLVMType(clang::QualType t);
+  mlir::Type getMLIRType(clang::QualType t);
 
   size_t getTypeSize(clang::QualType t);
 
@@ -470,9 +521,10 @@ public:
       if (Glob.getMLIRType(Glob.CGM.getContext().getPointerType(parm->getType())).isa<mlir::LLVM::LLVMPointerType>())
         LLVMABI = true;
       
-      if (!LLVMABI && isa<llvm::StructType, llvm::ArrayType>(LLTy)) {
-        isArray = true;
-      } else if (isa<clang::RValueReferenceType>(parm->getType()) || isa<clang::LValueReferenceType>(parm->getType()))
+      if (!LLVMABI) {
+        Glob.getMLIRType(parm->getType(), &isArray);    
+      }
+      if (!isArray && (isa<clang::RValueReferenceType>(parm->getType()) || isa<clang::LValueReferenceType>(parm->getType())))
         isArray = true;
       mlir::Value val = function.getArgument(i);
       assert(val);
@@ -502,10 +554,10 @@ public:
         if (!initexpr.val) {
           expr->getInit()->dump();
         }
-        mlir::Value toset = initexpr.getValue(builder);
-        assert(!ThisVal.isReference);
+        bool isArray = false;
+        Glob.getMLIRType(expr->getInit()->getType(), &isArray);
 
-        CommonFieldLookup(CC->getThisObjectType(), field, ThisVal.val).store(builder, toset);
+        CommonFieldLookup(CC->getThisObjectType(), field, ThisVal.val).store(builder, initexpr, isArray);
       }
     }
 
