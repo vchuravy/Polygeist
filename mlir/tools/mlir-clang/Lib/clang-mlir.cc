@@ -1676,8 +1676,10 @@ ValueWithOffsets MLIRScanner::VisitCallExpr(clang::CallExpr *expr) {
                                  "cudaEventElapsedTime", "cudaEventSynchronize", "cudaEventRecord"};
   if (auto ic = dyn_cast<ImplicitCastExpr>(expr->getCallee()))
     if (auto sr = dyn_cast<DeclRefExpr>(ic->getSubExpr())) {
-      if ((sr->getDecl()->getIdentifier() && funcs.count(sr->getDecl()->getName().str())) ||
-          (!callee->hasBody() && isa<CXXOperatorCallExpr>(expr) && Glob.getMLIRType(Glob.CGM.getContext().getPointerType(expr->getArg(0)->getType())).isa<mlir::LLVM::LLVMPointerType>())) {
+      if ((sr->getDecl()->getIdentifier() && funcs.count(sr->getDecl()->getName().str())))
+      {
+          //||
+          //(!callee->hasBody() && isa<CXXOperatorCallExpr>(expr) && Glob.getMLIRType(Glob.CGM.getContext().getPointerType(expr->getArg(0)->getType())).isa<mlir::LLVM::LLVMPointerType>())) {
 
 
         std::vector<mlir::Value> args;
@@ -2700,6 +2702,15 @@ ValueWithOffsets MLIRScanner::VisitBinaryOperator(clang::BinaryOperator *BO) {
     lhs.store(builder, result);
     return lhs;
   }
+  case clang::BinaryOperator::Opcode::BO_ShlAssign: {
+    assert(lhs.isReference);
+    auto prev = lhs.getValue(builder);
+
+    mlir::Value result = builder.create<mlir::ShiftLeftOp>(loc, prev,
+                                                        rhs.getValue(builder));
+    lhs.store(builder, result);
+    return lhs;
+  }
   case clang::BinaryOperator::Opcode::BO_RemAssign: {
     assert(lhs.isReference);
     auto prev = lhs.getValue(builder);
@@ -2802,7 +2813,9 @@ ValueWithOffsets MLIRScanner::CommonFieldLookup(clang::QualType CT, const FieldD
     } else {
         ET = PT.getElementType().cast<mlir::LLVM::LLVMArrayType>().getElementType();
     }
-    auto commonGEP = builder.create<mlir::LLVM::GEPOp>(loc, mlir::LLVM::LLVMPointerType::get(ET, PT.getAddressSpace()), vec);
+    mlir::Value commonGEP = builder.create<mlir::LLVM::GEPOp>(loc, mlir::LLVM::LLVMPointerType::get(ET, PT.getAddressSpace()), vec);
+    if (rd->isUnion())
+        commonGEP = builder.create<mlir::LLVM::BitcastOp>(loc, mlir::LLVM::LLVMPointerType::get(getMLIRType(FD->getType()), PT.getAddressSpace()), commonGEP);
     return ValueWithOffsets(commonGEP, /*isReference*/true);
   }
   auto mt = val.getType().cast<MemRefType>();
