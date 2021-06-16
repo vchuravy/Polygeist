@@ -2769,7 +2769,7 @@ ValueWithOffsets MLIRScanner::CommonFieldLookup(clang::QualType CT, const FieldD
 
   size_t fnum = 0;
   auto CXRD = dyn_cast<CXXRecordDecl>(rd);
-  if (CXRD && CXRD->getNumBases() > 0 || rd->isOrContainsUnion()) {
+  if (CXRD && CXRD->getNumBases() > 0 || rd->isUnion()) {
     auto &layout = Glob.CGM.getTypes().getCGRecordLayout(rd);
     fnum = layout.getLLVMFieldNo(FD);
   } else { 
@@ -3863,7 +3863,7 @@ mlir::Type MLIRASTConsumer::getMLIRType(clang::QualType qt, bool *implicitRef, b
     }
     
     auto CXRD = dyn_cast<CXXRecordDecl>(RT->getDecl());
-    if ( RT->getDecl()->isOrContainsUnion() || (CXRD && CXRD->getNumBases() > 0)  || ST->getNumElements() == 0 || recursive || !ST->isLiteral() && (ST->getName().contains("SmallVector") || ST->getName() == "struct._IO_FILE" || ST->getName() == "class.std::basic_ifstream" || ST->getName() == "class.std::basic_ostream" || ST->getName() == "class.std::basic_ofstream")) {
+    if ( RT->getDecl()->isUnion() || (CXRD && CXRD->getNumBases() > 0)  || ST->getNumElements() == 0 || recursive || !ST->isLiteral() && (ST->getName().contains("SmallVector") || ST->getName() == "struct._IO_FILE" || ST->getName() == "class.std::basic_ifstream" || ST->getName() == "class.std::basic_ostream" || ST->getName() == "class.std::basic_ofstream")) {
       return typeTranslator.translateType(anonymize(ST));
     }
     
