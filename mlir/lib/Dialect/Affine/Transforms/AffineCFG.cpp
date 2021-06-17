@@ -355,8 +355,15 @@ struct MoveLoadToAffine : public OpRewritePattern<memref::LoadOp> {
         rank ? rewriter.getMultiDimIdentityMap(rank) : rewriter.getEmptyAffineMap();
     SmallVector<Value, 4> operands = load.getIndices();
 
+    if (map.getNumInputs() != operands.size()) {
+        load->getParentOfType<FuncOp>().dump();
+        llvm::errs() << " load: " << load << "\n";
+    }
+    assert(map.getNumInputs() == operands.size());
     fullyComposeAffineMapAndOperands(&map, &operands);
+    assert(map.getNumInputs() == operands.size());
     canonicalizeMapAndOperands(&map, &operands);
+    assert(map.getNumInputs() == operands.size());
 
     AffineLoadOp affineLoad = rewriter.create<AffineLoadOp>(
         load.getLoc(), load.getMemRef(), map, operands);

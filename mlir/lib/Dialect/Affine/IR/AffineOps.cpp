@@ -971,6 +971,7 @@ AffineApplyNormalizer::AffineApplyNormalizer(AffineMap map,
 }\
 
 bool need(AffineMap *map, SmallVectorImpl<Value> *operands) {
+  assert(map->getNumInputs() == operands->size());
   for(size_t i=0; i<map->getNumInputs(); ++i) {
     auto v = (*operands)[i];
     if (legalCondition(v, true, i < map->getNumDims()))
@@ -981,13 +982,14 @@ bool need(AffineMap *map, SmallVectorImpl<Value> *operands) {
 
 void mlir::fullyComposeAffineMapAndOperands(AffineMap *map,
                                             SmallVectorImpl<Value> *operands) {
-
+  assert(map->getNumInputs() == operands->size());
   while (need(map, operands)) {
     //llvm::errs() << "pre: " << *map << "\n";
     //for(auto op : *operands) {
     //  llvm::errs() << " -- operands: " << op << "\n";
     //}
     composeAffineMapAndOperands(map, operands);
+    assert(map->getNumInputs() == operands->size());
     //llvm::errs() << "post: " << *map << "\n";
     //for(auto op : *operands) {
     //  llvm::errs() << " -- operands: " << op << "\n";

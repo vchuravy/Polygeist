@@ -102,6 +102,8 @@ struct ValueWithOffsets {
       llvm::errs() << val << "\n";
     }
     assert(val.getType().isa<mlir::MemRefType>());
+    // return ValueWithOffsets(builder.create<memref::SubIndexOp>(loc, mt0, val, c0), /*isReference*/true);
+    assert(val.getType().cast<mlir::MemRefType>().getShape().size() == 1);
     return builder.create<memref::LoadOp>(loc, val,
                                           std::vector<mlir::Value>({c0}));
   }
@@ -113,46 +115,79 @@ struct ValueWithOffsets {
             llvm::errs() << " toStore.val: " << toStore.val << " isref " << toStore.isReference << " isar" << isArray << "\n";
           }
           assert(toStore.isReference);
-          auto smt = toStore.val.getType().cast<MemRefType>();
           auto loc = builder.getUnknownLoc();
           auto zeroIndex = builder.create<mlir::ConstantIndexOp>(loc, 0);
-          assert(smt.getShape().size() == 2);
+          
+          if (auto smt = toStore.val.getType().dyn_cast<MemRefType>()) {
+            assert(smt.getShape().size() <= 2);
           
           if (auto mt = val.getType().dyn_cast<MemRefType>()) {
               assert(smt.getElementType() == mt.getElementType());
-              assert(mt.getShape().size() == 2);
-              assert(smt.getShape()[1] == mt.getShape()[1]);
+              assert(mt.getShape().size() == smt.getShape().size());
+              assert(smt.getShape().back() == mt.getShape().back());
 
-              for (ssize_t i = 0; i < smt.getShape()[1]; i++) {
-                mlir::Value idx[] = {zeroIndex, builder.create<mlir::ConstantIndexOp>(loc, i)};
+              for (ssize_t i = 0; i < smt.getShape().back(); i++) {
+                SmallVector<mlir::Value,2> idx;
+                if (smt.getShape().size() == 2) idx.push_back(zeroIndex);
+                idx.push_back(builder.create<mlir::ConstantIndexOp>(loc, i));
                 builder.create<mlir::memref::StoreOp>(loc, 
                   builder.create<mlir::memref::LoadOp>(loc, toStore.val, idx), val, idx);
               }
           } else {
-            llvm::errs() << " toStore.val: " << toStore.val << "\n";
-            llvm::errs() << "val: " << val << " isRef: " << isReference << "\n";
             auto pt = val.getType().cast<LLVM::LLVMPointerType>();
-            llvm::errs() << "pt: " << pt << "\n";
             mlir::Type elty;
             if (auto at = pt.getElementType().dyn_cast<LLVM::LLVMArrayType>()) {
                 elty = at.getElementType();
-                assert(smt.getShape()[1] == at.getNumElements());
+                assert(smt.getShape().back() == at.getNumElements());
             } else {
                 auto st = pt.getElementType().dyn_cast<LLVM::LLVMStructType>();
                 elty = st.getBody()[0];
-                assert(smt.getShape()[1] == st.getBody().size());
+                assert(smt.getShape().back() == st.getBody().size());
             }
             assert(elty == smt.getElementType());
+            elty = LLVM::LLVMPointerType::get(elty, pt.getAddressSpace());
 
             auto iTy = builder.getIntegerType(32);
             auto zero32 = builder.create<mlir::ConstantOp>(loc, iTy, builder.getIntegerAttr(iTy, 0));
-            for (ssize_t i = 0; i < smt.getShape()[1]; i++) {
-               mlir::Value idx[] = {zeroIndex, builder.create<mlir::ConstantIndexOp>(loc, i)};
+            for (ssize_t i = 0; i < smt.getShape().back(); i++) {
+               SmallVector<mlir::Value,2> idx;
+               if (smt.getShape().size() == 2) idx.push_back(zeroIndex);
+               idx.push_back(builder.create<mlir::ConstantIndexOp>(loc, i));
                mlir::Value lidx[] = {val, zero32, builder.create<mlir::ConstantOp>(loc, iTy, builder.getIntegerAttr(iTy, i))};
                builder.create<mlir::LLVM::StoreOp>(loc, 
                   builder.create<mlir::memref::LoadOp>(loc, toStore.val, idx), 
                   builder.create<mlir::LLVM::GEPOp>(loc, elty, lidx));
             }
+          }
+          } else {
+            smt = val.getType().cast<MemRefType>();
+            assert(smt.getShape().size() <= 2);
+
+            auto pt = toStore.val.getType().cast<LLVM::LLVMPointerType>();
+            mlir::Type elty;
+            if (auto at = pt.getElementType().dyn_cast<LLVM::LLVMArrayType>()) {
+                elty = at.getElementType();
+                assert(smt.getShape().back() == at.getNumElements());
+            } else {
+                auto st = pt.getElementType().dyn_cast<LLVM::LLVMStructType>();
+                elty = st.getBody()[0];
+                assert(smt.getShape().back() == st.getBody().size());
+            }
+            assert(elty == smt.getElementType());
+            elty = LLVM::LLVMPointerType::get(elty, pt.getAddressSpace());
+
+            auto iTy = builder.getIntegerType(32);
+            auto zero32 = builder.create<mlir::ConstantOp>(loc, iTy, builder.getIntegerAttr(iTy, 0));
+            for (ssize_t i = 0; i < smt.getShape().back(); i++) {
+               SmallVector<mlir::Value,2> idx;
+               if (smt.getShape().size() == 2) idx.push_back(zeroIndex);
+               idx.push_back(builder.create<mlir::ConstantIndexOp>(loc, i));
+               mlir::Value lidx[] = {toStore.val, zero32, builder.create<mlir::ConstantOp>(loc, iTy, builder.getIntegerAttr(iTy, i))};
+               builder.create<mlir::memref::StoreOp>(loc, 
+                  builder.create<mlir::LLVM::LoadOp>(loc, 
+                  builder.create<mlir::LLVM::GEPOp>(loc, elty, lidx)), val, idx);
+            }
+
           }
       } else {
         store(builder, toStore.getValue(builder));
