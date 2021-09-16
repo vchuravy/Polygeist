@@ -145,7 +145,6 @@ void ParallelLower::runOnFunction() {
   Operation *symbolTableOp =
       getFunction()->getParentWithTrait<OpTrait::SymbolTable>();
 
-  CallGraph &cg = getAnalysis<CallGraph>();
   SymbolTableCollection symbolTable;
   symbolTable.getSymbolTable(symbolTableOp);
 
@@ -350,6 +349,18 @@ void ParallelLower::runOnFunction() {
       storeOp.replaceAllUsesWith((mlir::Value)bz.create<memref::LoadOp>(
           storeOp.getLoc(), storeOp.memref(), indices));
       storeOp.erase();
+    });
+
+    container.walk([&](LLVM::CallOp call) {
+        if (call.callee().getValue() == "cudaMemcpy") {
+            OpBuilder bz(call);
+            auto i1 = bz.getI1Type();
+            auto falsev = bz.create<mlir::ConstantOp>(call.getLoc(), i1, builder.getIntegerAttr(i1, 0));
+            bz.create<LLVM::MemcpyOp>(call.getLoc(), call.getOperand(0), call.getOperand(1), call.getOperand(1), /*isVolatile*/falsev);
+            call.replaceAllUsesWith(bz.create<mlir::ConstantOp>(
+                      call.getLoc(), call.getType(0), builder.getIntegerAttr(call.getType(0), 0)));
+            call.erase();
+        }
     });
 
     launchOp.erase();

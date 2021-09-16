@@ -2696,6 +2696,7 @@ ValueWithOffsets MLIRScanner::VisitCallExpr(clang::CallExpr *expr) {
                                  "puts",
                                  "memcpy",
                                  "__builtin_memcpy",
+                                 "cudaMemcpy",
                                  "cudaMalloc",
                                  "open",
                                  "fopen",
